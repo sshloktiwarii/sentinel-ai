@@ -7,12 +7,11 @@ def get_gpu_wired_limit() -> int:
     Falls back to 16384 on any error or unparseable output.
     """
     try:
-        result = subprocess.run(
+        output = subprocess.check_output(
             ["sysctl", "-n", "iogpu.wired_limit_mb"],
-            capture_output=True,
             text=True,
         )
-        return int(result.stdout.strip())
+        return int(output.strip())
     except Exception:
         return 16384
 
