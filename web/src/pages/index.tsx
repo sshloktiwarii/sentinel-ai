@@ -75,9 +75,21 @@ interface SpikeRecord {
   pageouts:     number;
 }
 
+interface QuotaRecord {
+  provider:      string;
+  model:         string;
+  remaining_pct: number;
+  tokens_left:   string;
+  resets_in:     string;
+  status:        "healthy" | "warning" | "exhausted";
+  action_label:  string;
+  action_value:  string;
+}
+
 type ConnectionStatus = "connecting" | "connected" | "reconnecting" | "error";
 type ActiveView       = "overview"  | "memory"    | "swap"         | "pressure";
 type TimeWindow       = "1m"        | "5m"        | "1h";
+type TopLevelTab      = "telemetry" | "quotas";
 
 const API_BASE      = "http://127.0.0.1:8000";
 const WS_URL        = "ws://127.0.0.1:8000/ws/telemetry";
@@ -142,6 +154,13 @@ function thrashLabel(index: number): string {
   return "Nominal";
 }
 
+/** Quota capacity bar colour: Mint >50 %, Orange 20–50 %, Red <20 % */
+function quotaColor(pct: number): string {
+  if (pct >= 50) return APPLE.mint;
+  if (pct >= 20) return APPLE.orange;
+  return APPLE.red;
+}
+
 /* ── Alert-triangle icon (inline SVG, no extra dep) ──────────────────── */
 function IconAlertTriangle({ color = APPLE.orange, size = 14 }: { color?: string; size?: number }) {
   return (
@@ -159,6 +178,26 @@ function IconAlertTriangle({ color = APPLE.orange, size = 14 }: { color?: string
       <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
       <line x1="12" y1="9" x2="12" y2="13" />
       <line x1="12" y1="17" x2="12.01" y2="17" />
+    </svg>
+  );
+}
+
+/* ── Copy icon ────────────────────────────────────────────────────────── */
+function IconCopy({ color = APPLE.label3, size = 12 }: { color?: string; size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke={color}
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
     </svg>
   );
 }
@@ -210,7 +249,86 @@ function StatusBadge({ status }: { status: ConnectionStatus }) {
 }
 
 /* ══════════════════════════════════════════════════════════════════════
-   SEGMENTED CONTROL  (view picker)
+   TOP-LEVEL TAB BAR  ("System Telemetry" | "Agent Quotas")
+══════════════════════════════════════════════════════════════════════ */
+const TOP_TABS: { id: TopLevelTab; label: string }[] = [
+  { id: "telemetry", label: "System Telemetry" },
+  { id: "quotas",    label: "Agent Quotas"      },
+];
+
+function TopTabBar({
+  active,
+  onChange,
+}: {
+  active:   TopLevelTab;
+  onChange: (t: TopLevelTab) => void;
+}) {
+  const idx = TOP_TABS.findIndex((t) => t.id === active);
+
+  return (
+    <div
+      role="tablist"
+      aria-label="Dashboard section"
+      style={{
+        position:     "relative",
+        display:      "inline-flex",
+        background:   APPLE.fillTertiary,
+        borderRadius: 10,
+        padding:      2,
+        gap:          0,
+        border:       `1px solid ${APPLE.separator}`,
+      }}
+    >
+      {/* Sliding capsule */}
+      <span
+        aria-hidden="true"
+        style={{
+          position:      "absolute",
+          top:           2,
+          bottom:        2,
+          left:          `calc(${idx} * (100% - 4px) / ${TOP_TABS.length} + 2px)`,
+          width:         `calc((100% - 4px) / ${TOP_TABS.length})`,
+          background:    "rgba(255,255,255,0.10)",
+          borderRadius:  8,
+          border:        `1px solid rgba(255,255,255,0.16)`,
+          transition:    "left 0.2s cubic-bezier(0.4, 0, 0.2, 1)",
+          pointerEvents: "none",
+          boxShadow:     "0 1px 4px rgba(0,0,0,0.45)",
+        }}
+      />
+      {TOP_TABS.map(({ id, label }) => (
+        <button
+          key={id}
+          role="tab"
+          aria-selected={active === id}
+          onClick={() => onChange(id)}
+          style={{
+            position:      "relative",
+            zIndex:        1,
+            padding:       "5px 18px",
+            fontSize:      12,
+            fontWeight:    active === id ? 600 : 400,
+            color:         active === id ? APPLE.label : APPLE.label3,
+            background:    "transparent",
+            border:        "none",
+            borderRadius:  8,
+            cursor:        "pointer",
+            letterSpacing: "0.01em",
+            transition:    "color 0.15s",
+            fontFamily:    "-apple-system, BlinkMacSystemFont, sans-serif",
+            userSelect:    "none",
+            whiteSpace:    "nowrap",
+          }}
+        >
+          {label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   SEGMENTED CONTROL  (view picker — telemetry sub-views)
 ══════════════════════════════════════════════════════════════════════ */
 const VIEWS: { id: ActiveView; label: string }[] = [
   { id: "overview", label: "Overview" },
@@ -887,6 +1005,247 @@ function SpikesInspector({
 }
 
 /* ══════════════════════════════════════════════════════════════════════
+   QUOTA CAPACITY BAR
+══════════════════════════════════════════════════════════════════════ */
+function QuotaBar({ pct }: { pct: number }) {
+  const color = quotaColor(pct);
+  const clamped = Math.max(0, Math.min(pct, 100));
+
+  return (
+    <div
+      style={{
+        height:       6,
+        background:   "rgba(255,255,255,0.08)",
+        borderRadius: 3,
+        overflow:     "hidden",
+        margin:       "8px 0 4px",
+      }}
+    >
+      <div
+        style={{
+          height:       "100%",
+          width:        `${clamped}%`,
+          background:   color,
+          borderRadius: 3,
+          boxShadow:    `0 0 6px 0 ${color}70`,
+          transition:   "width 0.4s cubic-bezier(0.4, 0, 0.2, 1)",
+        }}
+      />
+    </div>
+  );
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   QUOTA PROVIDER CARD
+══════════════════════════════════════════════════════════════════════ */
+function QuotaCard({ record }: { record: QuotaRecord }) {
+  const [copied, setCopied] = useState(false);
+  const color = quotaColor(record.remaining_pct);
+
+  const statusDotColor: Record<QuotaRecord["status"], string> = {
+    healthy:   APPLE.mint,
+    warning:   APPLE.orange,
+    exhausted: APPLE.red,
+  };
+  const dotColor = statusDotColor[record.status];
+
+  function handleAction() {
+    if (!record.action_value) return;
+    navigator.clipboard.writeText(record.action_value).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1800);
+    });
+  }
+
+  return (
+    <div
+      style={{
+        background:   "rgba(255,255,255,0.04)",
+        border:       `1px solid ${APPLE.separator}`,
+        borderRadius: 14,
+        padding:      "14px 16px 12px",
+        display:      "flex",
+        flexDirection:"column",
+        gap:          0,
+        transition:   "background 0.15s",
+      }}
+    >
+      {/* Header row */}
+      <div
+        style={{
+          display:        "flex",
+          justifyContent: "space-between",
+          alignItems:     "flex-start",
+          marginBottom:   2,
+        }}
+      >
+        <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
+          <span
+            style={{
+              fontSize:      12,
+              fontWeight:    600,
+              color:         APPLE.label,
+              fontFamily:    "-apple-system, BlinkMacSystemFont, sans-serif",
+              letterSpacing: "0.01em",
+            }}
+          >
+            {record.provider}
+          </span>
+          <span
+            style={{
+              fontSize:   10,
+              color:      APPLE.label3,
+              fontFamily: "-apple-system, BlinkMacSystemFont, sans-serif",
+            }}
+          >
+            {record.model}
+          </span>
+        </div>
+
+        {/* Status dot + label */}
+        <span
+          style={{
+            display:      "inline-flex",
+            alignItems:   "center",
+            gap:          5,
+            fontSize:     10,
+            fontWeight:   500,
+            color:        dotColor,
+            background:   `${dotColor}18`,
+            border:       `1px solid ${dotColor}30`,
+            borderRadius: 8,
+            padding:      "2px 7px",
+            fontFamily:   "-apple-system, BlinkMacSystemFont, sans-serif",
+            whiteSpace:   "nowrap",
+          }}
+        >
+          <span
+            style={{
+              width:        5,
+              height:       5,
+              borderRadius: "50%",
+              background:   dotColor,
+              display:      "inline-block",
+              boxShadow:    record.status === "healthy" ? `0 0 5px 1px ${dotColor}80` : "none",
+            }}
+          />
+          {record.status.charAt(0).toUpperCase() + record.status.slice(1)}
+        </span>
+      </div>
+
+      {/* Capacity bar */}
+      <QuotaBar pct={record.remaining_pct} />
+
+      {/* Metrics row */}
+      <div
+        style={{
+          display:            "flex",
+          justifyContent:     "space-between",
+          fontSize:           11,
+          fontVariantNumeric: "tabular-nums",
+          fontFamily:         "-apple-system, BlinkMacSystemFont, sans-serif",
+          marginTop:          4,
+        }}
+      >
+        <span style={{ color }}>
+          {record.remaining_pct.toFixed(1)}%
+          {record.tokens_left !== "—" && (
+            <span style={{ color: APPLE.label3, marginLeft: 5 }}>
+              ({record.tokens_left})
+            </span>
+          )}
+        </span>
+        <span style={{ color: APPLE.label3 }}>
+          {record.resets_in !== "—" ? `Resets in ${record.resets_in}` : record.resets_in}
+        </span>
+      </div>
+
+      {/* Action pill */}
+      {record.action_label && (
+        <button
+          onClick={handleAction}
+          title={record.action_value}
+          style={{
+            marginTop:    10,
+            display:      "inline-flex",
+            alignItems:   "center",
+            gap:          5,
+            alignSelf:    "flex-start",
+            padding:      "3px 10px",
+            fontSize:     11,
+            fontWeight:   500,
+            color:        copied ? APPLE.mint : APPLE.label2,
+            background:   copied ? `${APPLE.mint}18` : "rgba(255,255,255,0.06)",
+            border:       `1px solid ${copied ? APPLE.mint + "40" : "rgba(255,255,255,0.10)"}`,
+            borderRadius: 8,
+            cursor:       "pointer",
+            fontFamily:   "-apple-system, BlinkMacSystemFont, sans-serif",
+            transition:   "all 0.15s",
+            userSelect:   "none",
+          }}
+        >
+          <IconCopy color={copied ? APPLE.mint : APPLE.label3} size={11} />
+          {copied ? "Copied!" : record.action_label}
+        </button>
+      )}
+    </div>
+  );
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   QUOTA GRID VIEW
+══════════════════════════════════════════════════════════════════════ */
+function QuotaGrid({ quotas, loading }: { quotas: QuotaRecord[]; loading: boolean }) {
+  if (loading && quotas.length === 0) {
+    return (
+      <div
+        aria-live="polite"
+        style={{
+          display:        "flex",
+          alignItems:     "center",
+          justifyContent: "center",
+          height:         220,
+          gap:            8,
+          color:          APPLE.label3,
+          fontSize:       12,
+          fontFamily:     "-apple-system, BlinkMacSystemFont, sans-serif",
+        }}
+      >
+        {[0, 1, 2].map((i) => (
+          <span
+            key={i}
+            style={{
+              width:         5,
+              height:        5,
+              borderRadius:  "50%",
+              background:    APPLE.label4,
+              display:       "inline-block",
+              animation:     `sentinel-pulse 1.2s ease-in-out ${i * 0.2}s infinite`,
+            }}
+          />
+        ))}
+        <span>Fetching quota data…</span>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      style={{
+        display:             "grid",
+        gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))",
+        gap:                 12,
+        padding:             "4px 0 8px",
+      }}
+    >
+      {quotas.map((q) => (
+        <QuotaCard key={`${q.provider}-${q.model}`} record={q} />
+      ))}
+    </div>
+  );
+}
+
+/* ══════════════════════════════════════════════════════════════════════
    OVERVIEW GRID
 ══════════════════════════════════════════════════════════════════════ */
 function OverviewGrid({
@@ -1179,12 +1538,57 @@ function useSpikes() {
 }
 
 /* ══════════════════════════════════════════════════════════════════════
+   CUSTOM HOOK — quota fetcher
+══════════════════════════════════════════════════════════════════════ */
+function useQuotas(active: TopLevelTab) {
+  const [quotas,  setQuotas]  = useState<QuotaRecord[]>([]);
+  const [loading, setLoading] = useState(false);
+  const timerRef              = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const fetch_ = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/quotas`);
+      if (res.ok) {
+        const data: QuotaRecord[] = await res.json();
+        setQuotas(data);
+      }
+    } catch {
+      // silent — keep stale data
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (active !== "quotas") {
+      // Stop polling when not visible
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
+      return;
+    }
+
+    fetch_();
+    // Refresh every 30 s while visible
+    timerRef.current = setInterval(fetch_, 30_000);
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+    };
+  }, [active, fetch_]);
+
+  return { quotas, loading, refresh: fetch_ };
+}
+
+/* ══════════════════════════════════════════════════════════════════════
    MAIN DASHBOARD
 ══════════════════════════════════════════════════════════════════════ */
 export default function Home() {
   const [liveHistory, setLiveHistory] = useState<ChartPoint[]>([]);
   const [latest,      setLatest]      = useState<TelemetryFrame | null>(null);
   const [status,      setStatus]      = useState<ConnectionStatus>("connecting");
+  const [topTab,      setTopTab]      = useState<TopLevelTab>("telemetry");
   const [view,        setView]        = useState<ActiveView>("overview");
   const [timeWindow,  setTimeWindow]  = useState<TimeWindow>("1m");
 
@@ -1198,6 +1602,7 @@ export default function Home() {
 
   const { data: histData, loading: histLoading } = useHistoryData(timeWindow);
   const spikes = useSpikes();
+  const { quotas, loading: quotasLoading } = useQuotas(topTab);
 
   /* ── Decide which data set to show ── */
   // In 1m mode, use the live buffer.
@@ -1261,6 +1666,7 @@ export default function Home() {
   /* ── When a spike is selected, switch to an appropriate window ── */
   function handleSpikeSelect(s: SpikeRecord) {
     setHighlightedSpike(s);
+    setTopTab("telemetry");
     const age = Date.now() / 1000 - s.timestamp;
     if (age <= 60) {
       setTimeWindow("1m");
@@ -1339,127 +1745,241 @@ export default function Home() {
             </div>
           </header>
 
-          {/* Unified toolbar — view picker + spikes button */}
+          {/* ── Top-level tab bar (System Telemetry | Agent Quotas) ── */}
           <div
-            className="unified-toolbar"
             style={{
-              display:        "flex",
-              alignItems:     "center",
-              justifyContent: "space-between",
+              display:         "flex",
+              justifyContent:  "center",
+              padding:         "8px 20px 0",
+              borderBottom:    `1px solid ${APPLE.separator}`,
+              paddingBottom:   10,
             }}
           >
-            <SegmentedControl active={view} onChange={setView} />
-            {spikesBtn}
+            <TopTabBar active={topTab} onChange={setTopTab} />
           </div>
 
-          {/* Content */}
-          <main className="window-content">
-            {view === "overview" && (
-              <OverviewGrid
-                latest={latest}
-                history={displayHistory}
-                histLoading={histLoading}
-                spikes={spikeMarkers}
-                timeWindow={timeWindow}
-                onTimeWindowChange={setTimeWindow}
-              />
-            )}
-
-            {view === "memory" && (
-              <FocusView
-                title="VRAM Wired"
-                latest={latest}
-                history={displayHistory}
-                histLoading={histLoading}
-                dataKey="wired_mb"
-                color={APPLE.blue}
-                unit="MB"
-                valueFn={(f) => `${fmtMB(Math.round(f.wired_mb))} MB`}
-                subFn={(f) =>
-                  f.limit_mb > 0
-                    ? `${((f.wired_mb / f.limit_mb) * 100).toFixed(1)}% of ${fmtMB(f.limit_mb)} MB budget`
-                    : "—"
-                }
-                gauge={
-                  latest ? (
-                    <VramGauge
-                      wired_mb={latest.wired_mb}
-                      limit_mb={latest.limit_mb}
-                    />
-                  ) : undefined
-                }
-                spikes={spikeMarkers}
-                timeWindow={timeWindow}
-                onTimeWindowChange={setTimeWindow}
-              />
-            )}
-
-            {view === "swap" && (
-              <FocusView
-                title="Swap Committed"
-                latest={latest}
-                history={displayHistory}
-                histLoading={histLoading}
-                dataKey="swap_used_mb"
-                color={APPLE.cyan}
-                unit="MB"
-                valueFn={(f) => `${fmtMB(Math.round(f.swap_used_mb))} MB`}
-                subFn={(f) =>
-                  f.swap_total_mb > 0
-                    ? `${((f.swap_used_mb / f.swap_total_mb) * 100).toFixed(1)}% of ${fmtMB(Math.round(f.swap_total_mb))} MB`
-                    : "—"
-                }
-                spikes={spikeMarkers}
-                timeWindow={timeWindow}
-                onTimeWindowChange={setTimeWindow}
-              />
-            )}
-
-            {view === "pressure" && (
-              <div className="focus-layout">
-                <FocusView
-                  title="Thrash Danger Index"
-                  latest={latest}
-                  history={displayHistory}
-                  histLoading={histLoading}
-                  dataKey="thrash_index"
-                  color={tColor}
-                  unit=""
-                  valueFn={(f) => f.thrash_index.toFixed(3)}
-                  subFn={(f) => thrashLabel(f.thrash_index)}
-                  domain={[0, 1]}
-                  gauge={latest ? <ThrashMeter index={tIdx} /> : undefined}
-                  spikes={spikeMarkers}
-                  timeWindow={timeWindow}
-                  onTimeWindowChange={setTimeWindow}
-                />
-                <FocusView
-                  title="Pageouts"
-                  latest={latest}
-                  history={displayHistory}
-                  histLoading={histLoading}
-                  dataKey="pageouts"
-                  color={APPLE.orange}
-                  unit=""
-                  valueFn={(f) => fmtMB(f.pageouts)}
-                  subFn={() => "cumulative since boot"}
-                  spikes={spikeMarkers}
-                />
+          {/* ════════════════════════════════════════════════════════
+              SYSTEM TELEMETRY PANEL
+          ════════════════════════════════════════════════════════ */}
+          {topTab === "telemetry" && (
+            <>
+              {/* Unified toolbar — view picker + spikes button */}
+              <div
+                className="unified-toolbar"
+                style={{
+                  display:        "flex",
+                  alignItems:     "center",
+                  justifyContent: "space-between",
+                }}
+              >
+                <SegmentedControl active={view} onChange={setView} />
+                {spikesBtn}
               </div>
-            )}
-          </main>
+
+              {/* Content */}
+              <main className="window-content">
+                {view === "overview" && (
+                  <OverviewGrid
+                    latest={latest}
+                    history={displayHistory}
+                    histLoading={histLoading}
+                    spikes={spikeMarkers}
+                    timeWindow={timeWindow}
+                    onTimeWindowChange={setTimeWindow}
+                  />
+                )}
+
+                {view === "memory" && (
+                  <FocusView
+                    title="VRAM Wired"
+                    latest={latest}
+                    history={displayHistory}
+                    histLoading={histLoading}
+                    dataKey="wired_mb"
+                    color={APPLE.blue}
+                    unit="MB"
+                    valueFn={(f) => `${fmtMB(Math.round(f.wired_mb))} MB`}
+                    subFn={(f) =>
+                      f.limit_mb > 0
+                        ? `${((f.wired_mb / f.limit_mb) * 100).toFixed(1)}% of ${fmtMB(f.limit_mb)} MB budget`
+                        : "—"
+                    }
+                    gauge={
+                      latest ? (
+                        <VramGauge
+                          wired_mb={latest.wired_mb}
+                          limit_mb={latest.limit_mb}
+                        />
+                      ) : undefined
+                    }
+                    spikes={spikeMarkers}
+                    timeWindow={timeWindow}
+                    onTimeWindowChange={setTimeWindow}
+                  />
+                )}
+
+                {view === "swap" && (
+                  <FocusView
+                    title="Swap Committed"
+                    latest={latest}
+                    history={displayHistory}
+                    histLoading={histLoading}
+                    dataKey="swap_used_mb"
+                    color={APPLE.cyan}
+                    unit="MB"
+                    valueFn={(f) => `${fmtMB(Math.round(f.swap_used_mb))} MB`}
+                    subFn={(f) =>
+                      f.swap_total_mb > 0
+                        ? `${((f.swap_used_mb / f.swap_total_mb) * 100).toFixed(1)}% of ${fmtMB(Math.round(f.swap_total_mb))} MB`
+                        : "—"
+                    }
+                    spikes={spikeMarkers}
+                    timeWindow={timeWindow}
+                    onTimeWindowChange={setTimeWindow}
+                  />
+                )}
+
+                {view === "pressure" && (
+                  <div className="focus-layout">
+                    <FocusView
+                      title="Thrash Danger Index"
+                      latest={latest}
+                      history={displayHistory}
+                      histLoading={histLoading}
+                      dataKey="thrash_index"
+                      color={tColor}
+                      unit=""
+                      valueFn={(f) => f.thrash_index.toFixed(3)}
+                      subFn={(f) => thrashLabel(f.thrash_index)}
+                      domain={[0, 1]}
+                      gauge={latest ? <ThrashMeter index={tIdx} /> : undefined}
+                      spikes={spikeMarkers}
+                      timeWindow={timeWindow}
+                      onTimeWindowChange={setTimeWindow}
+                    />
+                    <FocusView
+                      title="Pageouts"
+                      latest={latest}
+                      history={displayHistory}
+                      histLoading={histLoading}
+                      dataKey="pageouts"
+                      color={APPLE.orange}
+                      unit=""
+                      valueFn={(f) => fmtMB(f.pageouts)}
+                      subFn={() => "cumulative since boot"}
+                      spikes={spikeMarkers}
+                    />
+                  </div>
+                )}
+              </main>
+            </>
+          )}
+
+          {/* ════════════════════════════════════════════════════════
+              AGENT QUOTAS PANEL
+          ════════════════════════════════════════════════════════ */}
+          {topTab === "quotas" && (
+            <main className="window-content">
+              {/* Section header */}
+              <div
+                style={{
+                  display:        "flex",
+                  alignItems:     "center",
+                  justifyContent: "space-between",
+                  marginBottom:   14,
+                }}
+              >
+                <div>
+                  <p
+                    style={{
+                      margin:        0,
+                      fontSize:      13,
+                      fontWeight:    600,
+                      color:         APPLE.label,
+                      fontFamily:    "-apple-system, BlinkMacSystemFont, sans-serif",
+                      letterSpacing: "0.01em",
+                    }}
+                  >
+                    AI Provider Quota Monitor
+                  </p>
+                  <p
+                    style={{
+                      margin:     "2px 0 0",
+                      fontSize:   11,
+                      color:      APPLE.label3,
+                      fontFamily: "-apple-system, BlinkMacSystemFont, sans-serif",
+                    }}
+                  >
+                    Rate-limit health across active agents &amp; models · refreshes every 30 s
+                  </p>
+                </div>
+
+                {/* Refresh pill */}
+                <button
+                  onClick={() => {}}
+                  style={{
+                    display:      "inline-flex",
+                    alignItems:   "center",
+                    gap:          5,
+                    padding:      "4px 11px",
+                    fontSize:     11,
+                    fontWeight:   500,
+                    color:        APPLE.label2,
+                    background:   "rgba(255,255,255,0.06)",
+                    border:       `1px solid ${APPLE.separator}`,
+                    borderRadius: 8,
+                    cursor:       "default",
+                    fontFamily:   "-apple-system, BlinkMacSystemFont, sans-serif",
+                    userSelect:   "none",
+                  }}
+                >
+                  {quotasLoading ? (
+                    <>
+                      {[0, 1, 2].map((i) => (
+                        <span
+                          key={i}
+                          style={{
+                            width:        4,
+                            height:       4,
+                            borderRadius: "50%",
+                            background:   APPLE.label4,
+                            display:      "inline-block",
+                            animation:    `sentinel-pulse 1.2s ease-in-out ${i * 0.2}s infinite`,
+                          }}
+                        />
+                      ))}
+                    </>
+                  ) : (
+                    <span style={{ color: APPLE.mint, fontSize: 10 }}>●</span>
+                  )}
+                  {quotasLoading ? "Refreshing…" : "Up to date"}
+                </button>
+              </div>
+
+              <QuotaGrid quotas={quotas} loading={quotasLoading} />
+            </main>
+          )}
         </div>
 
         {/* Footer */}
         <footer className="page-footer">
-          Sentinel-AI · macOS sysctl &amp; vm_stat ·{" "}
-          {timeWindow === "1m"
-            ? `${MAX_POINTS}s rolling window`
-            : timeWindow === "5m"
-            ? "5 min history"
-            : "1 hour history"}
+          {topTab === "telemetry" ? (
+            <>
+              Sentinel-AI · macOS sysctl &amp; vm_stat ·{" "}
+              {timeWindow === "1m"
+                ? `${MAX_POINTS}s rolling window`
+                : timeWindow === "5m"
+                ? "5 min history"
+                : "1 hour history"}
+            </>
+          ) : (
+            <>Sentinel-AI · AI Provider Quota Monitor · OmniRoute {OMNIROUTE_BASE}</>
+          )}
         </footer>
       </div>
     </div>
   );
 }
+
+// Re-export so the constant is accessible at module scope for the footer
+const OMNIROUTE_BASE = "http://localhost:20128";

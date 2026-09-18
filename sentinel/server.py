@@ -6,6 +6,7 @@ Exposes:
   - WebSocket  /ws/telemetry           — live 1 s telemetry stream
   - GET        /api/history?window=…   — historical data for 1m / 5m / 1h windows
   - GET        /api/spikes             — top-5 spike events in the last 24 hours
+  - GET        /api/quotas             — AI-provider quota health snapshot
 """
 
 import asyncio
@@ -23,6 +24,7 @@ from sentinel.harvester import (
     get_swap_usage,
     get_wired_memory_mb,
 )
+from sentinel.quota import get_all_quotas
 
 app = FastAPI(title="Sentinel-AI")
 
@@ -120,4 +122,16 @@ async def api_spikes() -> list[dict]:
     Ordered by thrash_index descending.
     """
     rows = await asyncio.get_event_loop().run_in_executor(None, get_spikes)
+    return rows
+
+# ── REST: quotas ──────────────────────────────────────────────────────────────
+
+@app.get("/api/quotas")
+async def api_quotas() -> list[dict]:
+    """Return quota health snapshot for all configured AI providers.
+
+    Each item contains: provider, model, remaining_pct, tokens_left,
+    resets_in, status, action_label, action_value.
+    """
+    rows = await asyncio.get_event_loop().run_in_executor(None, get_all_quotas)
     return rows
