@@ -5,6 +5,19 @@ build-backend = "setuptools.backends.legacy:build"
 [project]
 name = "sentinel-ai"
 version = "0.1.0"
+dependencies = [
+    "fastapi>=0.115.12",
+    "httpx2>=0.28.2",
+    "starlette>=0.46.2",
+    "websockets>=15.0.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "anyio>=4.15.1",
+]
 
 [tool.setuptools.packages.find]
 where = ["."]
