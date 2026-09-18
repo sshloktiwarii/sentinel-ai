@@ -57,7 +57,8 @@ def test_pageout_count_missing_key():
         "Mach Virtual Memory Statistics: (page size of 16384 bytes)\n"
         "Pages free: 1200.\n"
     )
-    with patch("subprocess.check_output", return_value=vm_stat_output.encode()):
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value.stdout = vm_stat_output
         assert get_pageout_count() == 0
 
 # ---------------------------------------------------------------------------
