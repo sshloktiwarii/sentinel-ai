@@ -33,6 +33,7 @@ def _patch_harvester():
     """Return a context-manager stack that mocks all harvester calls."""
     return (
         patch("sentinel.server.get_gpu_wired_limit", return_value=MOCK_LIMIT),
+        patch("sentinel.server.get_wired_memory_mb", return_value=MOCK_WIRED),
         patch("sentinel.server.get_swap_usage", return_value=(MOCK_SWAP_TOTAL, MOCK_SWAP_USED)),
         patch("sentinel.server.get_pageout_count", return_value=MOCK_PAGEOUTS),
         patch("sentinel.server.compute_thrash_danger_index", return_value=MOCK_THRASH),
@@ -48,7 +49,7 @@ class TestWebSocketConnection:
     def test_connection_is_accepted(self):
         """Client should be able to connect without an error."""
         patches = _patch_harvester()
-        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6]:
             with TestClient(app) as client:
                 with client.websocket_connect("/ws/telemetry") as ws:
                     # Receive one message to confirm the handshake completed
@@ -68,7 +69,7 @@ class TestWebSocketConnection:
 class TestTelemetryPayload:
     def _get_message(self) -> dict:
         patches = _patch_harvester()
-        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6]:
             with TestClient(app) as client:
                 with client.websocket_connect("/ws/telemetry") as ws:
                     raw = ws.receive_text()
@@ -76,7 +77,7 @@ class TestTelemetryPayload:
 
     def test_payload_is_valid_json(self):
         patches = _patch_harvester()
-        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6]:
             with TestClient(app) as client:
                 with client.websocket_connect("/ws/telemetry") as ws:
                     raw = ws.receive_text()
@@ -104,7 +105,7 @@ class TestTelemetryPayload:
 
     def test_payload_wired_mb_matches_mock(self):
         msg = self._get_message()
-        assert msg["wired_mb"] == MOCK_LIMIT
+        assert msg["wired_mb"] == MOCK_WIRED
 
     def test_payload_swap_used_mb_matches_mock(self):
         msg = self._get_message()
@@ -130,8 +131,8 @@ class TestPersistence:
     def test_insert_telemetry_is_called(self):
         """Each broadcasted message must trigger one insert_telemetry call."""
         patches = _patch_harvester()
-        with patches[0], patches[1], patches[2], patches[3] as mock_thrash, \
-             patches[4] as mock_insert, patches[5]:
+        with patches[0], patches[1], patches[2], patches[3], patches[4] as mock_thrash, \
+             patches[5] as mock_insert, patches[6]:
             with TestClient(app) as client:
                 with client.websocket_connect("/ws/telemetry") as ws:
                     ws.receive_text()
@@ -139,8 +140,8 @@ class TestPersistence:
 
     def test_insert_called_with_correct_swap(self):
         patches = _patch_harvester()
-        with patches[0], patches[1], patches[2], patches[3], \
-             patches[4] as mock_insert, patches[5]:
+        with patches[0], patches[1], patches[2], patches[3], patches[4], \
+             patches[5] as mock_insert, patches[6]:
             with TestClient(app) as client:
                 with client.websocket_connect("/ws/telemetry") as ws:
                     ws.receive_text()
