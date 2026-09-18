@@ -12,7 +12,6 @@ from contextlib import contextmanager
 from typing import Generator
 
 # Default DB path; override via init_db(path=...) for tests.
-# All public functions read this at call time so monkeypatching works correctly.
 _DB_PATH = "sentinel.db"
 _local = threading.local()
 
@@ -94,12 +93,38 @@ def get_latest_metrics(limit: int = 100, path: str | None = None) -> list[dict]:
         )
         return [dict(row) for row in cursor.fetchall()]
 
+def _fallback_rows(conn: sqlite3.Connection, limit: int = 60) -> list[dict]:
+    """Return up to *limit* most-recent rows regardless of timestamp, oldest first.
+
+    Used when a time-windowed query returns no results (e.g. sparse early data).
+    """
+    cursor = conn.execute(
+        """
+        SELECT id, timestamp, wired_mb, swap_used_mb, pageouts, thrash_index
+        FROM (
+            SELECT id, timestamp, wired_mb, swap_used_mb, pageouts, thrash_index
+            FROM telemetry
+            ORDER BY id DESC
+            LIMIT ?
+        )
+        ORDER BY timestamp ASC
+        """,
+        (limit,),
+    )
+    return [dict(row) for row in cursor.fetchall()]
+
 def get_history_window(window: str = "1m", path: str | None = None) -> list[dict]:
     """Return telemetry rows for the requested time window.
 
     - "1m": raw rows from the last 60 seconds (up to 60 rows), oldest first.
-    - "5m": rows from the last 300 seconds sampled at ~5 s intervals (up to 60 rows).
-    - "1h": average-bucketed rows across the last 3600 seconds (~60-120 buckets).
+    - "5m": rows from the last 300 seconds sampled at ~5 s bucket intervals
+            (up to 60 rows).  Uses GROUP BY so it works on all SQLite versions.
+    - "1h": average-bucketed rows across the last 3600 seconds (60 s buckets,
+            up to 60 buckets).
+
+    Fallback: if the windowed query returns 0 rows but the table has data,
+    the most-recent 60 raw rows are returned instead so the frontend is never
+    given an empty array when telemetry exists.
 
     All results are returned oldest-first so the frontend can plot them directly.
     """
@@ -118,60 +143,67 @@ def get_history_window(window: str = "1m", path: str | None = None) -> list[dict
                 """,
                 (since,),
             )
-            return [dict(row) for row in cursor.fetchall()]
+            rows = [dict(row) for row in cursor.fetchall()]
+            if not rows:
+                rows = _fallback_rows(conn, 60)
+            return rows
 
         elif window == "5m":
             since = now - 300
-            cursor = conn.execute(
-                """
-                SELECT id,
-                       timestamp,
-                       wired_mb,
-                       swap_used_mb,
-                       pageouts,
-                       thrash_index
-                FROM (
-                    SELECT *,
-                           CAST((timestamp - ?) / 5 AS INTEGER) AS bucket,
-                           ROW_NUMBER() OVER (
-                               PARTITION BY CAST((timestamp - ?) / 5 AS INTEGER)
-                               ORDER BY timestamp ASC
-                           ) AS rn
-                    FROM telemetry
-                    WHERE timestamp >= ?
-                )
-                WHERE rn = 1
-                ORDER BY timestamp ASC
-                LIMIT 60
-                """,
-                (since, since, since),
-            )
-            return [dict(row) for row in cursor.fetchall()]
-
-        elif window == "1h":
-            since = now - 3600
+            # Use GROUP BY on a 5-second bucket index — compatible with all
+            # SQLite versions (no window functions required).
             cursor = conn.execute(
                 """
                 SELECT
-                    CAST((timestamp - ?) / 60 AS INTEGER)  AS bucket,
-                    MIN(timestamp)                          AS timestamp,
-                    AVG(wired_mb)                           AS wired_mb,
-                    AVG(swap_used_mb)                       AS swap_used_mb,
-                    AVG(pageouts)                           AS pageouts,
-                    AVG(thrash_index)                       AS thrash_index
+                    CAST((timestamp - :since) / 5 AS INTEGER) AS bucket,
+                    MIN(timestamp)  AS timestamp,
+                    AVG(wired_mb)   AS wired_mb,
+                    AVG(swap_used_mb) AS swap_used_mb,
+                    CAST(AVG(pageouts) AS INTEGER) AS pageouts,
+                    AVG(thrash_index) AS thrash_index
                 FROM telemetry
-                WHERE timestamp >= ?
+                WHERE timestamp >= :since
                 GROUP BY bucket
                 ORDER BY bucket ASC
-                LIMIT 120
+                LIMIT 60
                 """,
-                (since, since),
+                {"since": since},
             )
             rows = []
             for row in cursor.fetchall():
                 d = dict(row)
                 d.pop("bucket", None)
                 rows.append(d)
+            if not rows:
+                rows = _fallback_rows(conn, 60)
+            return rows
+
+        elif window == "1h":
+            since = now - 3600
+            cursor = conn.execute(
+                """
+                SELECT
+                    CAST((timestamp - :since) / 60 AS INTEGER) AS bucket,
+                    MIN(timestamp)    AS timestamp,
+                    AVG(wired_mb)     AS wired_mb,
+                    AVG(swap_used_mb) AS swap_used_mb,
+                    CAST(AVG(pageouts) AS INTEGER) AS pageouts,
+                    AVG(thrash_index) AS thrash_index
+                FROM telemetry
+                WHERE timestamp >= :since
+                GROUP BY bucket
+                ORDER BY bucket ASC
+                LIMIT 60
+                """,
+                {"since": since},
+            )
+            rows = []
+            for row in cursor.fetchall():
+                d = dict(row)
+                d.pop("bucket", None)
+                rows.append(d)
+            if not rows:
+                rows = _fallback_rows(conn, 60)
             return rows
 
         else:

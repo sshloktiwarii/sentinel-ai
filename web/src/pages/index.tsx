@@ -86,6 +86,9 @@ const BASE_RETRY_MS = 1_500;
 const MAX_RETRY_MS  = 30_000;
 const VRAM_BUDGET   = 18_432; // MB — M-series 18 GB unified memory
 
+// Minimum points before we consider data "ready" to plot
+const MIN_PLOT_POINTS = 5;
+
 // How often to re-fetch historical data when in 5m/1h mode (ms)
 const HISTORY_POLL_MS: Record<TimeWindow, number> = {
   "1m": 0,       // not used — live stream
@@ -429,6 +432,73 @@ function ChartTooltip({
 }
 
 /* ══════════════════════════════════════════════════════════════════════
+   EMPTY STATE — shown when fewer than MIN_PLOT_POINTS data points exist
+══════════════════════════════════════════════════════════════════════ */
+function ChartEmptyState({ loading }: { loading: boolean }) {
+  return (
+    <div
+      aria-live="polite"
+      style={{
+        height:         168,
+        display:        "flex",
+        flexDirection:  "column",
+        alignItems:     "center",
+        justifyContent: "center",
+        gap:            8,
+        color:          APPLE.label3,
+        fontFamily:     "-apple-system, BlinkMacSystemFont, sans-serif",
+        fontSize:       12,
+        letterSpacing:  "0.01em",
+        userSelect:     "none",
+      }}
+    >
+      {/* Subtle animated dot trio when loading */}
+      {loading ? (
+        <span
+          style={{
+            display:    "inline-flex",
+            gap:        5,
+          }}
+          aria-label="Loading historical metrics"
+        >
+          {[0, 1, 2].map((i) => (
+            <span
+              key={i}
+              style={{
+                width:            5,
+                height:           5,
+                borderRadius:     "50%",
+                background:       APPLE.label4,
+                display:          "inline-block",
+                animation:        `sentinel-pulse 1.2s ease-in-out ${i * 0.2}s infinite`,
+              }}
+            />
+          ))}
+        </span>
+      ) : (
+        <svg
+          width="20"
+          height="20"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke={APPLE.label4}
+          strokeWidth="1.5"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden="true"
+        >
+          {/* Simple waveform / chart icon */}
+          <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
+        </svg>
+      )}
+      <span>
+        {loading ? "Fetching historical metrics…" : "Collecting historical metrics…"}
+      </span>
+    </div>
+  );
+}
+
+/* ══════════════════════════════════════════════════════════════════════
    AREA CHART WRAPPER
 ══════════════════════════════════════════════════════════════════════ */
 interface MiniChartProps {
@@ -438,17 +508,21 @@ interface MiniChartProps {
   unit:          string;
   domain?:       [number | string, number | string];
   spikeMarkers?: SpikeRecord[]; // vertical reference lines for spike timestamps
+  loading?:      boolean;
 }
 
-function MiniChart({ data, dataKey, color, unit, domain, spikeMarkers }: MiniChartProps) {
+function MiniChart({ data, dataKey, color, unit, domain, spikeMarkers, loading }: MiniChartProps) {
   const gradId    = `grad-${String(dataKey)}`;
   const axisColor = APPLE.label4;
   const gridColor = "rgba(255,255,255,0.04)";
 
-  // Determine which spike timestamps are visible in the current data range
-  const visibleTs = new Set(data.map((p) => p.ts));
-  const firstTs   = data[0]?.ts  ?? 0;
-  const lastTs    = data[data.length - 1]?.ts ?? 0;
+  // Show empty state when data is too sparse
+  if (data.length < MIN_PLOT_POINTS) {
+    return <ChartEmptyState loading={loading ?? false} />;
+  }
+
+  const firstTs = data[0]?.ts  ?? 0;
+  const lastTs  = data[data.length - 1]?.ts ?? 0;
 
   const visibleSpikes =
     spikeMarkers?.filter(
@@ -499,7 +573,7 @@ function MiniChart({ data, dataKey, color, unit, domain, spikeMarkers }: MiniCha
           tickLine={false}
           axisLine={false}
           width={46}
-          domain={domain}
+          domain={domain ?? ["auto", "auto"]}
           tickFormatter={(v: number) =>
             v >= 1000 ? `${(v / 1000).toFixed(0)}k` : String(v)
           }
@@ -818,12 +892,14 @@ function SpikesInspector({
 function OverviewGrid({
   latest,
   history,
+  histLoading,
   spikes,
   timeWindow,
   onTimeWindowChange,
 }: {
   latest:              TelemetryFrame | null;
   history:             ChartPoint[];
+  histLoading:         boolean;
   spikes:              SpikeRecord[];
   timeWindow:          TimeWindow;
   onTimeWindowChange:  (w: TimeWindow) => void;
@@ -899,6 +975,7 @@ function OverviewGrid({
             color={APPLE.blue}
             unit="MB"
             spikeMarkers={spikes}
+            loading={histLoading}
           />
         </ChartCard>
         <ChartCard title="Swap Used — MB">
@@ -908,6 +985,7 @@ function OverviewGrid({
             color={APPLE.cyan}
             unit="MB"
             spikeMarkers={spikes}
+            loading={histLoading}
           />
         </ChartCard>
         <ChartCard title="Pageouts — cumulative">
@@ -917,6 +995,7 @@ function OverviewGrid({
             color={APPLE.orange}
             unit=""
             spikeMarkers={spikes}
+            loading={histLoading}
           />
         </ChartCard>
         <ChartCard title="Thrash Danger Index — 0–1">
@@ -927,6 +1006,7 @@ function OverviewGrid({
             unit=""
             domain={[0, 1]}
             spikeMarkers={spikes}
+            loading={histLoading}
           />
         </ChartCard>
       </div>
@@ -942,6 +1022,7 @@ function FocusView({
   title,
   latest,
   history,
+  histLoading,
   dataKey,
   color,
   unit,
@@ -956,6 +1037,7 @@ function FocusView({
   title:               string;
   latest:              TelemetryFrame | null;
   history:             ChartPoint[];
+  histLoading?:        boolean;
   dataKey:             keyof ChartPoint;
   color:               string;
   unit:                string;
@@ -1004,6 +1086,7 @@ function FocusView({
           unit={unit}
           domain={domain}
           spikeMarkers={spikes}
+          loading={histLoading}
         />
       </ChartCard>
     </div>
@@ -1012,6 +1095,8 @@ function FocusView({
 
 /* ══════════════════════════════════════════════════════════════════════
    CUSTOM HOOK — historical data fetcher
+   Clears stale data immediately on window change so the chart never
+   shows data from the previous window while fetching.
 ══════════════════════════════════════════════════════════════════════ */
 function useHistoryData(window: TimeWindow) {
   const [data, setData]       = useState<ChartPoint[]>([]);
@@ -1022,7 +1107,7 @@ function useHistoryData(window: TimeWindow) {
     if (window === "1m") return; // live stream handles this
     setLoading(true);
     try {
-      const res  = await fetch(`${API_BASE}/api/history?window=${window}`);
+      const res = await fetch(`${API_BASE}/api/history?window=${window}`);
       if (res.ok) {
         const rows: Record<string, number>[] = await res.json();
         setData(rows.map(historyRowToChartPoint));
@@ -1035,11 +1120,22 @@ function useHistoryData(window: TimeWindow) {
   }, [window]);
 
   useEffect(() => {
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+
     if (window === "1m") {
+      // Clear any stale hist data so switching back to live is clean
       setData([]);
+      setLoading(false);
       return;
     }
+
+    // Clear immediately so we don't flash stale data from the previous window
+    setData([]);
     fetch_();
+
     const interval = HISTORY_POLL_MS[window];
     if (interval > 0) {
       timerRef.current = setInterval(fetch_, interval);
@@ -1189,6 +1285,14 @@ export default function Home() {
     <SpikesInspector spikes={spikes} onSelect={handleSpikeSelect} />
   );
 
+  /* ── Keyframe for the loading pulse dots ── */
+  const pulseKeyframes = `
+    @keyframes sentinel-pulse {
+      0%, 80%, 100% { opacity: 0.2; transform: scale(0.85); }
+      40%           { opacity: 1;   transform: scale(1);    }
+    }
+  `;
+
   /* ── Render ── */
   return (
     <div
@@ -1200,6 +1304,9 @@ export default function Home() {
                      "Helvetica Neue", Arial, sans-serif`,
       }}
     >
+      {/* Inject pulse keyframes once */}
+      <style>{pulseKeyframes}</style>
+
       {/* ── Ambient background glows ── */}
       <div aria-hidden="true" className="ambient-layer">
         <div className="glow glow-blue"  />
@@ -1251,6 +1358,7 @@ export default function Home() {
               <OverviewGrid
                 latest={latest}
                 history={displayHistory}
+                histLoading={histLoading}
                 spikes={spikeMarkers}
                 timeWindow={timeWindow}
                 onTimeWindowChange={setTimeWindow}
@@ -1262,6 +1370,7 @@ export default function Home() {
                 title="VRAM Wired"
                 latest={latest}
                 history={displayHistory}
+                histLoading={histLoading}
                 dataKey="wired_mb"
                 color={APPLE.blue}
                 unit="MB"
@@ -1290,6 +1399,7 @@ export default function Home() {
                 title="Swap Committed"
                 latest={latest}
                 history={displayHistory}
+                histLoading={histLoading}
                 dataKey="swap_used_mb"
                 color={APPLE.cyan}
                 unit="MB"
@@ -1311,6 +1421,7 @@ export default function Home() {
                   title="Thrash Danger Index"
                   latest={latest}
                   history={displayHistory}
+                  histLoading={histLoading}
                   dataKey="thrash_index"
                   color={tColor}
                   unit=""
@@ -1326,6 +1437,7 @@ export default function Home() {
                   title="Pageouts"
                   latest={latest}
                   history={displayHistory}
+                  histLoading={histLoading}
                   dataKey="pageouts"
                   color={APPLE.orange}
                   unit=""
