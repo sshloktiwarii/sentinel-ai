@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=1920, height=1080">
-    <title>Product Promo</title>
+    <title>Sentinel – AI Provider &amp; Memory Monitor</title>
     <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;800&display=block" rel="stylesheet">
     <style>
@@ -18,8 +18,9 @@
         width: 1920px;
         height: 1080px;
         overflow: hidden;
-        background: #0a0a0f;
-        font-family: "Inter", sans-serif;
+        background: #121214;
+        font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Inter", sans-serif;
+        color: #ffffff;
       }
       .scene {
         position: absolute;
@@ -28,6 +29,8 @@
         width: 100%;
         height: 100%;
       }
+
+      /* ── Caption bar ─────────────────────────────────────────── */
       .caption-text-wrapper {
         position: absolute;
         bottom: 150px;
@@ -40,50 +43,314 @@
         padding: 10px 0;
       }
       .caption-line {
-        color: white;
+        color: #ffffff;
         font-size: 48px;
         font-weight: 600;
         letter-spacing: -0.02em;
         text-align: center;
-        text-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+        text-shadow: 0 4px 24px rgba(0, 0, 0, 0.8);
         transform: translateY(100%);
         opacity: 0;
+        max-width: 1400px;
+        line-height: 1.25;
       }
+
+      /* ── Frosted-glass dashboard panel ───────────────────────── */
+      .dashboard-panel {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%) scale(0.96);
+        opacity: 0;
+        width: 1400px;
+        height: 720px;
+        border-radius: 18px;
+        background: rgba(30, 30, 34, 0.72);
+        backdrop-filter: blur(32px) saturate(1.6);
+        -webkit-backdrop-filter: blur(32px) saturate(1.6);
+        border: 1px solid rgba(255, 255, 255, 0.10);
+        box-shadow:
+          0 32px 80px rgba(0, 0, 0, 0.60),
+          0 0 0 0.5px rgba(255, 255, 255, 0.06) inset;
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+      }
+
+      /* Title bar chrome */
+      .panel-titlebar {
+        flex-shrink: 0;
+        height: 44px;
+        background: rgba(22, 22, 26, 0.85);
+        border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+        display: flex;
+        align-items: center;
+        padding: 0 18px;
+        gap: 8px;
+      }
+      .traffic-light {
+        width: 13px;
+        height: 13px;
+        border-radius: 50%;
+      }
+      .tl-close  { background: #ff453a; }
+      .tl-min    { background: #ffd60a; }
+      .tl-max    { background: #30d158; }
+      .panel-title {
+        margin-left: 10px;
+        font-size: 13px;
+        font-weight: 500;
+        color: rgba(255, 255, 255, 0.55);
+        letter-spacing: 0.01em;
+      }
+
+      /* Screenshot area */
+      .panel-body {
+        flex: 1;
+        position: relative;
+        overflow: hidden;
+      }
+      .panel-screenshot {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        object-position: top left;
+        opacity: 0;
+        transition: opacity 0s;
+      }
+      .panel-screenshot.active {
+        opacity: 1;
+      }
+
+      /* Metric badges overlaid on the panel */
+      .metric-badge {
+        position: absolute;
+        bottom: 28px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        background: rgba(18, 18, 20, 0.80);
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
+        border: 1px solid rgba(255, 255, 255, 0.10);
+        border-radius: 10px;
+        padding: 10px 18px;
+        font-size: 15px;
+        font-weight: 500;
+        color: rgba(255, 255, 255, 0.90);
+        opacity: 0;
+        transform: translateY(12px);
+      }
+      .metric-badge .dot {
+        width: 9px;
+        height: 9px;
+        border-radius: 50%;
+        flex-shrink: 0;
+      }
+      .badge-memory { left: 60px; }
+      .badge-swap   { left: 320px; }
+      .badge-quota  { left: 580px; }
+      .badge-thrash { left: 840px; }
     </style>
   </head>
   <body>
-    <div data-hf-id="hf-at0g" id="root" data-composition-id="main" data-start="0" data-duration="20" data-width="1920" data-height="1080">
+    <div
+      data-hf-id="hf-at0g"
+      id="root"
+      data-composition-id="main"
+      data-start="0"
+      data-duration="20"
+      data-width="1920"
+      data-height="1080"
+    >
       <!-- Scene 1: Logo Intro -->
-      <div data-hf-id="hf-ae63" id="scene-1" class="scene" data-composition-id="scene1-logo-intro" data-composition-src="compositions/scene1-logo-intro.html" data-start="0" data-duration="1.5" data-track-index="1" data-width="1920" data-height="1080"></div>
+      <div
+        data-hf-id="hf-ae63"
+        id="scene-1"
+        class="scene"
+        data-composition-id="scene1-logo-intro"
+        data-composition-src="compositions/scene1-logo-intro.html"
+        data-start="0"
+        data-duration="1.5"
+        data-track-index="1"
+        data-width="1920"
+        data-height="1080"
+      ></div>
 
-      <!-- Scene 2-4: Continuous Canvas -->
-      <div data-hf-id="hf-7839" id="scene-2-4" class="scene" data-composition-id="scene2-4-canvas" data-composition-src="compositions/scene2-4-canvas.html" data-start="1.5" data-duration="12.5" data-track-index="1" data-width="1920" data-height="1080"></div>
+      <!-- Scenes 2-4: Telemetry dashboard reveal -->
+      <div
+        data-hf-id="hf-7839"
+        id="scene-2-4"
+        class="scene"
+        data-composition-id="scene2-4-canvas"
+        data-composition-src="compositions/scene2-4-canvas.html"
+        data-start="1.5"
+        data-duration="12.5"
+        data-track-index="1"
+        data-width="1920"
+        data-height="1080"
+      >
+        <!-- Frosted-glass macOS panel -->
+        <div class="dashboard-panel" id="dashboard-panel">
+          <div class="panel-titlebar">
+            <div class="traffic-light tl-close"></div>
+            <div class="traffic-light tl-min"></div>
+            <div class="traffic-light tl-max"></div>
+            <span class="panel-title">Sentinel — Memory &amp; AI Quota Monitor</span>
+          </div>
+          <div class="panel-body" id="panel-body">
+            <!-- screenshots transition between scenes -->
+            <img
+              id="ss-memory"
+              class="panel-screenshot active"
+              src="assets/screenshot-memory.png"
+              alt="Memory pressure telemetry view"
+              draggable="false"
+            />
+            <img
+              id="ss-swap"
+              class="panel-screenshot"
+              src="assets/screenshot-swap.png"
+              alt="Swap and thrash index view"
+              draggable="false"
+            />
+            <img
+              id="ss-quota"
+              class="panel-screenshot"
+              src="assets/screenshot-quota.png"
+              alt="AI provider quota health view"
+              draggable="false"
+            />
+          </div>
 
-      <!-- Scene 5: Logo Outro -->
-      <div data-hf-id="hf-ecu4" id="scene-5" class="scene" data-composition-id="scene5-logo-outro" data-composition-src="compositions/scene5-logo-outro.html" data-start="14" data-duration="6" data-track-index="1" data-width="1920" data-height="1080"></div>
-
-      <!-- Captions -->
-      <div data-hf-id="hf-xnxt" id="captions-comp" data-composition-id="captions" data-start="1.5" data-duration="12.5" data-track-index="2" data-width="1920" data-height="1080">
-        <div data-hf-id="hf-yd6g" class="caption-text-wrapper">
-          <div data-hf-id="hf-t08o" id="caption-text" class="caption-line">Starting with a blank canvas.</div>
+          <!-- Metric badges -->
+          <div class="metric-badge badge-memory" id="badge-memory">
+            <div class="dot" style="background: #0a84ff;"></div>
+            Wired Memory
+          </div>
+          <div class="metric-badge badge-swap" id="badge-swap">
+            <div class="dot" style="background: #ff453a;"></div>
+            Swap Pressure
+          </div>
+          <div class="metric-badge badge-quota" id="badge-quota">
+            <div class="dot" style="background: #30d158;"></div>
+            Quota Health
+          </div>
+          <div class="metric-badge badge-thrash" id="badge-thrash">
+            <div class="dot" style="background: #ff9f0a;"></div>
+            Thrash Index
+          </div>
         </div>
 
         <script>
           (function () {
+            const panel   = document.getElementById("dashboard-panel");
+            const ssNodes = document.querySelectorAll(".panel-screenshot");
+            const badges  = {
+              memory: document.getElementById("badge-memory"),
+              swap:   document.getElementById("badge-swap"),
+              quota:  document.getElementById("badge-quota"),
+              thrash: document.getElementById("badge-thrash"),
+            };
+
+            function showScreenshot(id) {
+              ssNodes.forEach((n) => n.classList.remove("active"));
+              const el = document.getElementById(id);
+              if (el) el.classList.add("active");
+            }
+
             const tl = gsap.timeline({ paused: true });
+
+            // Panel fade-in
+            tl.to(panel, { opacity: 1, scale: 1, duration: 0.9, ease: "power3.out" }, 0);
+
+            // Scene 2 badges (memory)
+            tl.to(badges.memory, { opacity: 1, y: 0, duration: 0.5, ease: "power2.out" }, 0.4);
+
+            // Scene 3: swap in, swap screenshot
+            tl.add(() => showScreenshot("ss-swap"), 3.8);
+            tl.to(badges.memory, { opacity: 0, y: -8, duration: 0.25, ease: "power2.in" }, 3.6);
+            tl.to(badges.swap,   { opacity: 1, y: 0,  duration: 0.5,  ease: "power2.out" }, 3.9);
+            tl.to(badges.thrash, { opacity: 1, y: 0,  duration: 0.5,  ease: "power2.out" }, 4.1);
+
+            // Scene 4: quota screenshot
+            tl.add(() => showScreenshot("ss-quota"), 7.8);
+            tl.to(badges.swap,   { opacity: 0, y: -8, duration: 0.25, ease: "power2.in" }, 7.6);
+            tl.to(badges.thrash, { opacity: 0, y: -8, duration: 0.25, ease: "power2.in" }, 7.7);
+            tl.to(badges.quota,  { opacity: 1, y: 0,  duration: 0.5,  ease: "power2.out" }, 7.9);
+
+            // Panel exit
+            tl.to(panel, { opacity: 0, scale: 0.96, duration: 0.4, ease: "power2.in" }, 12.0);
+
+            window.__timelines = window.__timelines || {};
+            window.__timelines["scene2-4-canvas"] = tl;
+          })();
+        </script>
+      </div>
+
+      <!-- Scene 5: Logo Outro -->
+      <div
+        data-hf-id="hf-ecu4"
+        id="scene-5"
+        class="scene"
+        data-composition-id="scene5-logo-outro"
+        data-composition-src="compositions/scene5-logo-outro.html"
+        data-start="14"
+        data-duration="6"
+        data-track-index="1"
+        data-width="1920"
+        data-height="1080"
+      ></div>
+
+      <!-- Captions -->
+      <div
+        data-hf-id="hf-xnxt"
+        id="captions-comp"
+        data-composition-id="captions"
+        data-start="1.5"
+        data-duration="12.5"
+        data-track-index="2"
+        data-width="1920"
+        data-height="1080"
+      >
+        <div data-hf-id="hf-yd6g" class="caption-text-wrapper">
+          <div data-hf-id="hf-t08o" id="caption-text" class="caption-line">
+            Your Mac knows when it's struggling. Now you do too.
+          </div>
+        </div>
+
+        <script>
+          (function () {
+            const tl   = gsap.timeline({ paused: true });
             const text = document.querySelector("#caption-text");
 
+            // Scene 1 caption
             tl.to(text, { opacity: 1, y: 0, duration: 0.8, ease: "power3.out" }, 0);
             tl.to(text, { opacity: 0, y: -20, duration: 0.3, ease: "power3.in" }, 3.2);
-            tl.set(text, { innerText: "Three cursors. One file. Zero meetings.", y: 40 }, 3.5);
-            tl.to(text, { opacity: 1, y: 0, duration: 0.6, ease: "power3.out" }, 3.5);
-            tl.to(text, { opacity: 0, y: -20, duration: 0.3, ease: "power3.in" }, 7.7);
+
+            // Scene 2 caption
+            tl.set(text, { innerText: "Memory pressure isn't a notification. It's an invisible drain.", y: 40 }, 3.5);
+            tl.to(text,  { opacity: 1, y: 0, duration: 0.6, ease: "power3.out" }, 3.5);
+            tl.to(text,  { opacity: 0, y: -20, duration: 0.3, ease: "power3.in" }, 7.7);
+
+            // Scene 3 caption
             tl.set(
               text,
-              { innerText: "Components in. Feedback resolved. No one waited.", y: 40 },
+              { innerText: "Thrash Danger Index. Unified VRAM telemetry, real-time swap tracking, and AI provider quota health.", y: 40 },
               8.0,
             );
             tl.to(text, { opacity: 1, y: 0, duration: 0.6, ease: "power3.out" }, 8.0);
+            tl.to(text, { opacity: 0, y: -20, duration: 0.4, ease: "power3.in" }, 11.6);
+
+            // Scene 4 caption
+            tl.set(
+              text,
+              { innerText: "Sentinel. Fully typed. Fully tested. Fully local.", y: 40 },
+              11.9,
+            );
+            tl.to(text, { opacity: 1, y: 0, duration: 0.5, ease: "power3.out" }, 11.9);
             tl.to(text, { opacity: 0, y: -20, duration: 0.4, ease: "power3.in" }, 12.1);
 
             window.__timelines = window.__timelines || {};
