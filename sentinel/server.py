@@ -4,27 +4,31 @@ sentinel/server.py
 FastAPI application for Sentinel-AI.
 Exposes:
   - WebSocket  /ws/telemetry           — live 1 s telemetry stream
+  - GET        /api/telemetry         — instantaneous telemetry snapshot
   - GET        /api/history?window=…   — historical data for 1m / 5m / 1h windows
   - GET        /api/spikes             — top-5 spike events in the last 24 hours
   - GET        /api/quotas             — AI-provider quota health snapshot
+  - GET        /api/engines            — local LLM engine & KV-cache telemetry
 """
 
 import asyncio
 import time
-from typing import Literal
+from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
 from sentinel.database import get_history_window, get_spikes, init_db, insert_telemetry
+from sentinel.engines import get_local_engines_async
 from sentinel.harvester import (
     compute_thrash_danger_index,
+    get_engine_pressure_snapshot,
     get_gpu_wired_limit,
     get_pageout_count,
     get_swap_usage,
     get_wired_memory_mb,
 )
-from sentinel.quota import get_all_quotas
+from sentinel.quota import get_all_quotas, get_velocity_metrics
 
 app = FastAPI(title="Sentinel-AI")
 
@@ -45,15 +49,21 @@ def _collect_reading() -> dict:
     total_swap, used_swap = get_swap_usage()
     pageouts     = get_pageout_count()
     thrash_index = compute_thrash_danger_index(wired_mb, limit_mb, used_swap)
+    engine_info  = get_engine_pressure_snapshot(wired_mb)
+    velocity     = get_velocity_metrics()
     ts           = time.time()
     return {
-        "timestamp":     ts,
-        "wired_mb":      wired_mb,
-        "limit_mb":      limit_mb,
-        "swap_total_mb": total_swap,
-        "swap_used_mb":  used_swap,
-        "pageouts":      pageouts,
-        "thrash_index":  thrash_index,
+        "timestamp":       ts,
+        "wired_mb":        wired_mb,
+        "limit_mb":        limit_mb,
+        "swap_total_mb":   total_swap,
+        "swap_used_mb":    used_swap,
+        "pageouts":        pageouts,
+        "thrash_index":    thrash_index,
+        "engine_active":   engine_info.get("engine_active", False),
+        "kv_cache_mb":     engine_info.get("kv_cache_mb", 0.0),
+        "kv_pressure_pct": engine_info.get("kv_pressure_pct", 0.0),
+        "velocity":        velocity,
     }
 
 # ── Lifecycle ─────────────────────────────────────────────────────────────────
@@ -127,14 +137,49 @@ async def api_spikes() -> list[dict]:
 # ── REST: quotas ──────────────────────────────────────────────────────────────
 
 @app.get("/api/quotas")
-async def api_quotas() -> list[dict]:
+async def api_quotas(
+    wrap: bool = Query(
+        default=False,
+        description="When true, wraps list in a dict containing top-level velocity block",
+    )
+) -> Any:
     """Return quota health snapshot for all configured AI providers.
 
     Each item contains: id, provider, model, remaining_pct, tokens_left,
-    resets_in, status.
+    resets_in, status, velocity.
 
     Never returns an empty list — falls back to baseline defaults when live
     provider data is unavailable.
     """
-    rows = await asyncio.get_event_loop().run_in_executor(None, get_all_quotas)
+    import inspect
+    if inspect.iscoroutinefunction(get_all_quotas):
+        rows = await get_all_quotas()
+    else:
+        rows = await asyncio.get_event_loop().run_in_executor(None, get_all_quotas)
+    if wrap:
+        return {"quotas": rows, "velocity": get_velocity_metrics()}
     return rows
+
+# ── REST: velocity ────────────────────────────────────────────────────────────
+
+@app.get("/api/velocity")
+async def api_velocity() -> dict:
+    """Return instantaneous token velocity and runaway agent loop detection metrics."""
+    return get_velocity_metrics()
+
+# ── REST: telemetry ───────────────────────────────────────────────────────────
+
+@app.get("/api/telemetry")
+async def api_telemetry() -> dict:
+    """Return instantaneous system telemetry snapshot with KV-cache pressure."""
+    return await asyncio.get_event_loop().run_in_executor(None, _collect_reading)
+
+# ── REST: engines ─────────────────────────────────────────────────────────────
+
+@app.get("/api/engines")
+async def api_engines() -> dict:
+    """Return active local LLM engine status, loaded models, and KV-cache breakdown."""
+    wired_mb = await asyncio.get_event_loop().run_in_executor(None, get_wired_memory_mb)
+    return await get_local_engines_async(wired_mb=wired_mb)
+
+

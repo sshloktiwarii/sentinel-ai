@@ -13,11 +13,12 @@ Anthropic  – Check the Anthropic API rate-limit headers by sending a tiny
 OpenAI     – Check OpenAI usage headers via a models-list request.
              Falls back to baseline defaults if the key is absent.
 
-OmniRoute  – Probe http://localhost:20128/ for reachability.
-             Updates the omniroute baseline record if reachable.
+OmniRoute  – Asynchronously harvest live proxy quotas, token usage, and rate-limit
+             counters from http://localhost:20128 using discovered local admin/bearer token.
+             Maps OmniRoute gateway telemetry and provider-level limits (KiloCode, Cursor, etc.).
 
-Cursor / Kimi / Manus – No public quota APIs; always return baseline
-             defaults (realistic demo values).
+Cursor / Kimi / Manus – Synchronized with local proxy states when registered in
+             OmniRoute; otherwise fallback to baseline defaults.
 
 Guarantees
 ──────────
@@ -27,16 +28,21 @@ floor — live data can only update individual fields, never remove records.
 
 from __future__ import annotations
 
-import math
-import os
-import time
+import asyncio
+import collections
 import datetime
 import json
+import math
+import os
 import re
-import urllib.request
+import subprocess
+import time
 import urllib.error
+import urllib.request
 from copy import deepcopy
 from typing import Literal
+
+import httpx
 
 # ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -71,6 +77,22 @@ _BASELINE: list[dict] = [
         "model":         "Local Gateway :20128",
         "remaining_pct": 94,
         "tokens_left":   "Unlimited / Self-Hosted",
+        "resets_in":     "Active",
+        "status":        "healthy",
+        "velocity": {
+            "tps": 0.0,
+            "tpm": 0.0,
+            "rpm": 0.0,
+            "runaway_detected": False,
+            "burn_rate_status": "nominal",
+        },
+    },
+    {
+        "id":            "kilocode",
+        "provider":      "KiloCode Agent",
+        "model":         "Kilo Router / Hybrid",
+        "remaining_pct": 100,
+        "tokens_left":   "100% available",
         "resets_in":     "Active",
         "status":        "healthy",
     },
@@ -123,14 +145,17 @@ def _seconds_to_human(seconds: float) -> str:
     """Convert a duration in seconds to a compact human string."""
     if seconds <= 0:
         return "< 1m"
-    minutes = int(seconds // 60)
-    hours   = minutes // 60
-    mins    = minutes % 60
+    days = int(seconds // 86400)
+    rem = seconds % 86400
+    hours = int(rem // 3600)
+    mins = int((rem % 3600) // 60)
+    if days > 0:
+        return f"{days}d {hours}h" if hours else f"{days}d"
     if hours > 0:
         return f"{hours}h {mins}m" if mins else f"{hours}h"
-    if minutes == 0:
+    if mins == 0:
         return "< 1m"
-    return f"{minutes}m"
+    return f"{mins}m"
 
 def _next_five_hour_reset() -> float:
     """Seconds until the next 5-hour boundary (00, 05, 10, 15, 20 UTC hour)."""
@@ -147,28 +172,207 @@ def _next_five_hour_reset() -> float:
         diff += 5 * 3600
     return diff
 
-def _next_midnight_seconds() -> float:
-    """Seconds until the next 00:00 UTC."""
-    now_utc = time.gmtime()
-    return (
-        (23 - now_utc.tm_hour) * 3600
-        + (59 - now_utc.tm_min) * 60
-        + (60 - now_utc.tm_sec)
+def _format_iso_reset(iso_ts: str | None, fallback: str = "Active") -> str:
+    if not iso_ts:
+        return fallback
+    try:
+        dt = datetime.datetime.fromisoformat(iso_ts.replace("Z", "+00:00"))
+        diff = (dt - datetime.datetime.now(datetime.timezone.utc)).total_seconds()
+        return _seconds_to_human(max(diff, 0))
+    except Exception:
+        return fallback
+
+
+# ── Instantaneous Token Velocity & Runaway Loop Detection ─────────────────────
+
+class TokenVelocityTracker:
+    """Sliding-window token velocity tracker and runaway loop detection engine.
+
+    Tracks (timestamp, total_tokens, request_count) over a rolling retention window
+    (default 60s) to detect high burn rates (>150 TPS) and request floods (>45 RPM).
+    """
+
+    def __init__(
+        self,
+        retention_seconds: float = 60.0,
+        debounce_seconds: float = 180.0,
+    ) -> None:
+        self.retention_seconds = float(retention_seconds)
+        self.debounce_seconds = float(debounce_seconds)
+        self._window: collections.deque[tuple[float, int, int]] = collections.deque()
+
+        # Runaway loop tracking state
+        self._high_tps_start_ts: float | None = None
+        self._high_rpm_start_ts: float | None = None
+        self._last_notification_ts: float = 0.0
+
+    def prune(self, current_ts: float) -> None:
+        """Discard records older than retention_seconds relative to current_ts."""
+        cutoff = current_ts - self.retention_seconds
+        while self._window and self._window[0][0] < cutoff:
+            self._window.popleft()
+
+    def record_probe(
+        self,
+        total_tokens: int,
+        request_count: int,
+        timestamp: float | None = None,
+    ) -> dict:
+        """Record a probe reading and compute instantaneous velocity metrics."""
+        now = float(time.time() if timestamp is None else timestamp)
+        self.prune(now)
+        self._window.append((now, int(total_tokens), int(request_count)))
+        return self.get_metrics(now=now)
+
+    def dispatch_notification(
+        self,
+        message: str = 'Agent runaway loop suspected (>150 TPS). Check active sessions.',
+        title: str = "Sentinel-AI Alert",
+    ) -> None:
+        """Send native macOS notification banner via AppleScript osascript."""
+        safe_msg = message.replace('"', '\\"')
+        safe_title = title.replace('"', '\\"')
+        script = f'display notification "{safe_msg}" with title "{safe_title}"'
+        try:
+            subprocess.run(["osascript", "-e", script], check=False, capture_output=True)
+        except Exception:
+            pass
+
+    def get_metrics(self, now: float | None = None) -> dict:
+        """Compute rolling token velocity and runaway loop detection status."""
+        current_ts = float(time.time() if now is None else now)
+        self.prune(current_ts)
+
+        if len(self._window) < 2:
+            return {
+                "tps": 0.0,
+                "tpm": 0.0,
+                "rpm": 0.0,
+                "runaway_detected": False,
+                "burn_rate_status": "nominal",
+            }
+
+        # 1. Instantaneous TPS: delta tokens / delta time between latest 2 points
+        t_last, tok_last, req_last = self._window[-1]
+        t_prev, tok_prev, req_prev = self._window[-2]
+        dt = max(t_last - t_prev, 0.0001)
+        delta_tok_instant = max(0, tok_last - tok_prev)
+        tps = round(delta_tok_instant / dt, 1)
+
+        # 2. Extrapolated TPM: rate over active rolling window
+        t_first, tok_first, req_first = self._window[0]
+        w_dt = max(t_last - t_first, 0.0001)
+        w_delta_tok = max(0, tok_last - tok_first)
+        w_delta_req = max(0, req_last - req_first)
+
+        tpm = round((w_delta_tok / w_dt) * 60.0, 1)
+
+        # 3. RPM: Requests initiated over active 60s window
+        rpm = round((w_delta_req / w_dt) * 60.0, 1)
+
+        # 4. Runaway Loop Detection Engine
+        # Condition A: Sustained high burn rate (tps > 150 for >= 15 consecutive seconds)
+        runaway_a = False
+        reason_a = None
+        if tps > 150.0:
+            if self._high_tps_start_ts is None:
+                self._high_tps_start_ts = t_prev
+            duration_a = t_last - self._high_tps_start_ts
+            if duration_a >= 15.0:
+                runaway_a = True
+                reason_a = f"Sustained high token burn: {tps:.1f} TPS"
+        else:
+            self._high_tps_start_ts = None
+
+        # Condition B: Request flood (rpm > 45 sustained with 0 backoff)
+        runaway_b = False
+        reason_b = None
+        if rpm > 45.0:
+            if self._high_rpm_start_ts is None:
+                self._high_rpm_start_ts = t_first
+            duration_b = t_last - self._high_rpm_start_ts
+            if duration_b >= 10.0 or (len(self._window) >= 3 and duration_b >= 5.0):
+                runaway_b = True
+                reason_b = f"Request flood: {rpm:.1f} RPM sustained with 0 backoff"
+        else:
+            self._high_rpm_start_ts = None
+
+        runaway_detected = runaway_a or runaway_b
+        reason = reason_a if runaway_a else (reason_b if runaway_b else None)
+
+        if runaway_detected:
+            burn_rate_status = "runaway"
+            if self._last_notification_ts == 0.0 or (t_last - self._last_notification_ts) >= self.debounce_seconds:
+                alert_msg = 'Agent runaway loop suspected (>150 TPS). Check active sessions.'
+                self.dispatch_notification(alert_msg)
+                self._last_notification_ts = t_last
+        elif tps > 80.0 or rpm > 25.0:
+            burn_rate_status = "elevated"
+        else:
+            burn_rate_status = "nominal"
+
+        res = {
+            "tps": tps,
+            "tpm": tpm,
+            "rpm": rpm,
+            "runaway_detected": runaway_detected,
+            "burn_rate_status": burn_rate_status,
+        }
+        if reason:
+            res["reason"] = reason
+        return res
+
+
+velocity_tracker = TokenVelocityTracker(retention_seconds=60.0)
+
+
+def get_velocity_metrics(now: float | None = None) -> dict:
+    """Return instantaneous token velocity and runaway loop detection status."""
+    return velocity_tracker.get_metrics(now=now)
+
+
+def record_token_reading(
+    total_tokens: int,
+    request_count: int,
+    timestamp: float | None = None,
+) -> dict:
+    """Record an external token and request count reading into the velocity tracker."""
+    return velocity_tracker.record_probe(
+        total_tokens=total_tokens,
+        request_count=request_count,
+        timestamp=timestamp,
     )
 
-def _http_get(
-    url: str,
-    headers: dict[str, str] | None = None,
-    timeout: float = 3.0,
-) -> tuple[int, dict[str, str], bytes]:
-    req = urllib.request.Request(url, headers=headers or {})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return resp.status, dict(resp.headers), resp.read()
 
-# ── Per-provider live probes ──────────────────────────────────────────────────
-# Each probe returns a partial dict of fields to *merge* into the baseline
-# record for that provider id.  If a probe fails, it returns {} so the
-# baseline values are preserved unchanged.
+# ── OmniRoute Local Auth Discovery ────────────────────────────────────────────
+
+def _get_omniroute_token() -> str:
+    """Retrieve local proxy bearer token from env or configuration files."""
+    token = os.environ.get("OMNIROUTE_API_KEY", "")
+    if token:
+        return token.strip()
+
+    candidate_files = [
+        os.path.expanduser("~/.omniroute/.env"),
+        os.path.expanduser("~/.config/omniroute/.env"),
+        os.path.expanduser("~/.kilocode/.env"),
+    ]
+    for path in candidate_files:
+        if os.path.isfile(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line.startswith("OMNIROUTE_API_KEY="):
+                            val = line.split("=", 1)[1].strip()
+                            val = val.strip("\"'")
+                            if val:
+                                return val
+            except Exception:
+                pass
+    return ""
+
+# ── Cloud Probes (Anthropic / OpenAI) ──────────────────────────────────────────
 
 _ANTHROPIC_CACHE_TS: float = 0.0
 _ANTHROPIC_CACHE: dict = {}
@@ -287,7 +491,6 @@ def _probe_openai() -> dict:
             tokens_str = f"{_fmt_tokens(tpm_remaining)} TPM"
             resets_in  = _parse_reset(reset_str) if reset_str else "Daily (00:00 UTC)"
         else:
-            # Headers not present on /models — preserve baseline look
             return {}
 
         result = {
@@ -303,73 +506,418 @@ def _probe_openai() -> dict:
     except Exception:
         return {}
 
-OMNIROUTE_BASE   = "http://localhost:20128"
+# ── OmniRoute Harvest & Mapping ───────────────────────────────────────────────
+
+OMNIROUTE_BASE = os.environ.get("OMNIROUTE_BASE", "http://localhost:20128").rstrip("/")
 _OMNIROUTE_CACHE_TS: float = 0.0
-_OMNIROUTE_CACHE: dict = {}
+_OMNIROUTE_CACHE: dict[str, dict] = {}
 _OMNIROUTE_TTL = 15.0
 
-def _probe_omniroute() -> dict:
-    """Return updated fields for the 'omniroute' record, or {} on failure."""
+def _parse_omniroute_telemetry(
+    quota_data: dict | None,
+    analytics_data: dict | None,
+    stats_payload: dict | None,
+) -> dict[str, dict]:
+    """
+    Extract provider quotas, token counters, and rate-limit statistics
+    into Sentinel's provider records.
+    """
+    updates: dict[str, dict] = {}
+
+    providers_list = (quota_data or {}).get("providers", [])
+    if not isinstance(providers_list, list):
+        providers_list = []
+
+    summary = (analytics_data or {}).get("summary", {})
+    if not isinstance(summary, dict):
+        summary = (stats_payload or {}).get("summary", {}) or {}
+
+    total_tokens = summary.get("totalTokens", 0)
+    total_reqs = summary.get("totalRequests", 0)
+
+    if total_tokens > 0 or total_reqs > 0:
+        record_token_reading(total_tokens=total_tokens, request_count=total_reqs)
+
+    # Error breakdown / rate limit counters
+    error_breakdown = (analytics_data or {}).get("errorBreakdown", [])
+    rate_limited_count = 0
+    if isinstance(error_breakdown, list):
+        for err in error_breakdown:
+            if isinstance(err, dict) and err.get("errorType") == "rate_limited":
+                rate_limited_count = err.get("count", 0)
+
+    # 1. Update OmniRoute Gateway record
+    if providers_list:
+        available_count = sum(
+            1 for p in providers_list
+            if p.get("percentRemaining", 100) > 0 and p.get("tokenStatus") != "expired"
+        )
+        total_providers = max(len(providers_list), 1)
+        omni_pct = round((available_count / total_providers) * 100)
+    else:
+        omni_pct = 94
+
+    if total_tokens > 0 or total_reqs > 0:
+        tokens_left_str = f"{_fmt_tokens(total_tokens)} tokens / {total_reqs} reqs"
+    else:
+        tokens_left_str = "Unlimited / Self-Hosted"
+
+    omni_status = _status_from_pct(omni_pct)
+    updates["omniroute"] = {
+        "remaining_pct": omni_pct,
+        "tokens_left":   tokens_left_str,
+        "resets_in":     "Active",
+        "status":        omni_status,
+        "velocity":      get_velocity_metrics(),
+    }
+
+    # 2. Update Cursor if present in OmniRoute providers
+    cursor_item = next(
+        (p for p in providers_list if p.get("provider") == "cursor"),
+        None,
+    )
+    if cursor_item:
+        c_pct = float(cursor_item.get("percentRemaining", 0))
+        c_used = cursor_item.get("quotaUsed", 0)
+        c_total = cursor_item.get("quotaTotal", 100) or 100
+        c_remaining = max(c_total - c_used, 0)
+        c_reset_at = cursor_item.get("resetAt")
+        c_resets_in = _format_iso_reset(c_reset_at, fallback="Active")
+        updates["cursor"] = {
+            "remaining_pct": round(c_pct),
+            "tokens_left":   f"{c_remaining} / {c_total} reqs",
+            "resets_in":     c_resets_in,
+            "status":        _status_from_pct(c_pct),
+        }
+
+    # 3. Update KiloCode if present in OmniRoute providers
+    kilo_item = next(
+        (p for p in providers_list if p.get("provider") == "kilocode"),
+        None,
+    )
+    if kilo_item:
+        k_pct = float(kilo_item.get("percentRemaining", 100))
+        k_reset_at = kilo_item.get("resetAt")
+        k_resets_in = _format_iso_reset(k_reset_at, fallback="Active")
+        updates["kilocode"] = {
+            "remaining_pct": round(k_pct),
+            "tokens_left":   "100% available",
+            "resets_in":     k_resets_in,
+            "status":        _status_from_pct(k_pct),
+        }
+
+    # 4. Check if any OmniRoute providers correspond to Claude or OpenAI
+    claude_item = next(
+        (p for p in providers_list if p.get("provider") in ("anthropic", "claude")),
+        None,
+    )
+    if claude_item:
+        cl_pct = float(claude_item.get("percentRemaining", 82))
+        updates["claude"] = {
+            "remaining_pct": round(cl_pct),
+            "tokens_left":   f"{round(cl_pct)}% available",
+            "resets_in":     _format_iso_reset(claude_item.get("resetAt"), fallback="Active"),
+            "status":        _status_from_pct(cl_pct),
+        }
+
+    openai_item = next(
+        (p for p in providers_list if p.get("provider") in ("openai", "codex")),
+        None,
+    )
+    if openai_item:
+        op_pct = float(openai_item.get("percentRemaining", 65))
+        updates["codex"] = {
+            "remaining_pct": round(op_pct),
+            "tokens_left":   f"{round(op_pct)}% available",
+            "resets_in":     _format_iso_reset(openai_item.get("resetAt"), fallback="Daily (00:00 UTC)"),
+            "status":        _status_from_pct(op_pct),
+        }
+
+    return updates
+
+async def _probe_omniroute_async() -> dict[str, dict]:
+    """Asynchronously probe OmniRoute on port 20128 using local bearer token."""
     global _OMNIROUTE_CACHE, _OMNIROUTE_CACHE_TS
 
     now = time.time()
     if _OMNIROUTE_CACHE and (now - _OMNIROUTE_CACHE_TS) < _OMNIROUTE_TTL:
-        return _OMNIROUTE_CACHE
+        return deepcopy(_OMNIROUTE_CACHE)
 
-    reachable = False
-    for probe in ("/v1/", "/"):
-        try:
-            status, _, _ = _http_get(f"{OMNIROUTE_BASE}{probe}", timeout=2.0)
-            if status < 500:
-                reachable = True
-                break
-        except Exception:
-            continue
+    token = _get_omniroute_token()
+    base_url = os.environ.get("OMNIROUTE_BASE", OMNIROUTE_BASE).rstrip("/")
+    headers = {"Accept": "application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
 
-    if reachable:
-        result = {
-            "remaining_pct": 94,
-            "tokens_left":   "Unlimited / Self-Hosted",
-            "resets_in":     "Active",
-            "status":        "healthy",
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            # Probe primary stats endpoints per spec
+            stats_payload = None
+            for ep in ("/api/stats", "/metrics", "/api/usage"):
+                try:
+                    r = await client.get(f"{base_url}{ep}", headers=headers)
+                    if r.status_code == 200:
+                        try:
+                            stats_payload = r.json()
+                            break
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+            # Query live provider quotas & analytics
+            quota_data = None
+            analytics_data = None
+
+            try:
+                rq = await client.get(f"{base_url}/api/usage/quota", headers=headers)
+                if rq.status_code == 200:
+                    quota_data = rq.json()
+                elif rq.status_code == 429:
+                    return {
+                        "omniroute": {
+                            "remaining_pct": 20,
+                            "tokens_left":   "Rate-Limited (429)",
+                            "resets_in":     "Backing off",
+                            "status":        "warning",
+                        }
+                    }
+            except Exception:
+                pass
+
+            try:
+                ra = await client.get(f"{base_url}/api/usage/analytics", headers=headers)
+                if ra.status_code == 200:
+                    analytics_data = ra.json()
+                elif ra.status_code == 429:
+                    return {
+                        "omniroute": {
+                            "remaining_pct": 20,
+                            "tokens_left":   "Rate-Limited (429)",
+                            "resets_in":     "Backing off",
+                            "status":        "warning",
+                        }
+                    }
+            except Exception:
+                pass
+
+            if not quota_data and not analytics_data and not stats_payload:
+                reachable = False
+                try:
+                    r_base = await client.get(f"{base_url}/", headers=headers)
+                    reachable = r_base.status_code < 500
+                except Exception:
+                    reachable = False
+
+                if reachable:
+                    res = {
+                        "omniroute": {
+                            "remaining_pct": 94,
+                            "tokens_left":   "Unlimited / Self-Hosted",
+                            "resets_in":     "Active",
+                            "status":        "healthy",
+                        }
+                    }
+                else:
+                    res = {
+                        "omniroute": {
+                            "remaining_pct": 0,
+                            "tokens_left":   "Offline / Unreachable",
+                            "resets_in":     "—",
+                            "status":        "exhausted",
+                        }
+                    }
+                _OMNIROUTE_CACHE = res
+                _OMNIROUTE_CACHE_TS = now
+                return deepcopy(res)
+
+            updates = _parse_omniroute_telemetry(quota_data, analytics_data, stats_payload)
+            _OMNIROUTE_CACHE = updates
+            _OMNIROUTE_CACHE_TS = now
+            return deepcopy(updates)
+
+    except Exception:
+        if _OMNIROUTE_CACHE:
+            return deepcopy(_OMNIROUTE_CACHE)
+        return {
+            "omniroute": {
+                "remaining_pct": 0,
+                "tokens_left":   "Offline / Unreachable",
+                "resets_in":     "—",
+                "status":        "exhausted",
+            }
         }
-    else:
-        result = {
-            "remaining_pct": 0,
-            "tokens_left":   "Unreachable",
-            "resets_in":     "—",
-            "status":        "exhausted",
-        }
 
-    _OMNIROUTE_CACHE    = result
-    _OMNIROUTE_CACHE_TS = now
-    return result
+def _probe_omniroute_sync() -> dict[str, dict]:
+    """Synchronous fallback probe for OmniRoute."""
+    global _OMNIROUTE_CACHE, _OMNIROUTE_CACHE_TS
+
+    now = time.time()
+    if _OMNIROUTE_CACHE and (now - _OMNIROUTE_CACHE_TS) < _OMNIROUTE_TTL:
+        return deepcopy(_OMNIROUTE_CACHE)
+
+    token = _get_omniroute_token()
+    base_url = os.environ.get("OMNIROUTE_BASE", OMNIROUTE_BASE).rstrip("/")
+    headers = {"Accept": "application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    try:
+        with httpx.Client(timeout=3.0) as client:
+            stats_payload = None
+            for ep in ("/api/stats", "/metrics", "/api/usage"):
+                try:
+                    r = client.get(f"{base_url}{ep}", headers=headers)
+                    if r.status_code == 200:
+                        stats_payload = r.json()
+                        break
+                except Exception:
+                    pass
+
+            quota_data = None
+            analytics_data = None
+
+            try:
+                rq = client.get(f"{base_url}/api/usage/quota", headers=headers)
+                if rq.status_code == 200:
+                    quota_data = rq.json()
+                elif rq.status_code == 429:
+                    return {
+                        "omniroute": {
+                            "remaining_pct": 20,
+                            "tokens_left":   "Rate-Limited (429)",
+                            "resets_in":     "Backing off",
+                            "status":        "warning",
+                        }
+                    }
+            except Exception:
+                pass
+
+            try:
+                ra = client.get(f"{base_url}/api/usage/analytics", headers=headers)
+                if ra.status_code == 200:
+                    analytics_data = ra.json()
+                elif ra.status_code == 429:
+                    return {
+                        "omniroute": {
+                            "remaining_pct": 20,
+                            "tokens_left":   "Rate-Limited (429)",
+                            "resets_in":     "Backing off",
+                            "status":        "warning",
+                        }
+                    }
+            except Exception:
+                pass
+
+            if not quota_data and not analytics_data and not stats_payload:
+                try:
+                    r_base = client.get(f"{base_url}/", headers=headers)
+                    reachable = r_base.status_code < 500
+                except Exception:
+                    reachable = False
+
+                if reachable:
+                    res = {
+                        "omniroute": {
+                            "remaining_pct": 94,
+                            "tokens_left":   "Unlimited / Self-Hosted",
+                            "resets_in":     "Active",
+                            "status":        "healthy",
+                        }
+                    }
+                else:
+                    res = {
+                        "omniroute": {
+                            "remaining_pct": 0,
+                            "tokens_left":   "Offline / Unreachable",
+                            "resets_in":     "—",
+                            "status":        "exhausted",
+                        }
+                    }
+                _OMNIROUTE_CACHE = res
+                _OMNIROUTE_CACHE_TS = now
+                return deepcopy(res)
+
+            updates = _parse_omniroute_telemetry(quota_data, analytics_data, stats_payload)
+            _OMNIROUTE_CACHE = updates
+            _OMNIROUTE_CACHE_TS = now
+            return deepcopy(updates)
+
+    except Exception:
+        if _OMNIROUTE_CACHE:
+            return deepcopy(_OMNIROUTE_CACHE)
+        return {
+            "omniroute": {
+                "remaining_pct": 0,
+                "tokens_left":   "Offline / Unreachable",
+                "resets_in":     "—",
+                "status":        "exhausted",
+            }
+        }
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
-def get_all_quotas() -> list[dict]:
+async def get_all_quotas() -> list[dict]:
     """
     Return quota records for all providers as plain dicts ready for JSON
     serialisation.
 
     Always returns a non-empty list — the BASELINE is the floor.
-    Live probes can update individual fields but cannot remove records.
+    Live probes update individual fields but never remove records.
     """
-    # Start from a deep copy of the baseline so we never mutate the source
     records = deepcopy(_BASELINE)
-
-    # Build an index for O(1) lookup
     index = {r["id"]: r for r in records}
 
-    # Merge live probe results where available
+    # Parallel asynchronous gathering of live probes
+    anthropic_task = asyncio.to_thread(_probe_anthropic)
+    openai_task    = asyncio.to_thread(_probe_openai)
+    omniroute_task = _probe_omniroute_async()
+
+    results = await asyncio.gather(
+        anthropic_task,
+        openai_task,
+        omniroute_task,
+        return_exceptions=True,
+    )
+
+    anthropic_res, openai_res, omniroute_res = results
+
+    if isinstance(anthropic_res, dict) and anthropic_res:
+        if "claude" in index:
+            index["claude"].update(anthropic_res)
+
+    if isinstance(openai_res, dict) and openai_res:
+        if "codex" in index:
+            index["codex"].update(openai_res)
+
+    if isinstance(omniroute_res, dict) and omniroute_res:
+        for provider_id, updates in omniroute_res.items():
+            if provider_id in index:
+                index[provider_id].update(updates)
+
+    if "omniroute" in index:
+        index["omniroute"]["velocity"] = get_velocity_metrics()
+
+    return records
+
+def get_all_quotas_sync() -> list[dict]:
+    """Synchronous fallback of get_all_quotas()."""
+    records = deepcopy(_BASELINE)
+    index = {r["id"]: r for r in records}
+
     probe_map: dict[str, dict] = {
-        "claude":     _probe_anthropic(),
-        "codex":      _probe_openai(),
-        "omniroute":  _probe_omniroute(),
+        "claude": _probe_anthropic(),
+        "codex":  _probe_openai(),
     }
+    omniroute_res = _probe_omniroute_sync()
+    if omniroute_res:
+        probe_map.update(omniroute_res)
 
     for provider_id, updates in probe_map.items():
         if updates and provider_id in index:
             index[provider_id].update(updates)
+
+    if "omniroute" in index:
+        index["omniroute"]["velocity"] = get_velocity_metrics()
 
     return records

@@ -47,14 +47,27 @@ const APPLE = {
 } as const;
 
 /* ── Types ────────────────────────────────────────────────────────────── */
+interface VelocityMetrics {
+  tps:              number;
+  tpm:              number;
+  rpm:              number;
+  burn_rate_status: "nominal" | "elevated" | "runaway";
+  runaway_detected: boolean;
+  reason?:          string;
+}
+
 interface TelemetryFrame {
-  timestamp:     number;
-  wired_mb:      number;
-  limit_mb:      number;
-  swap_total_mb: number;
-  swap_used_mb:  number;
-  pageouts:      number;
-  thrash_index:  number;
+  timestamp:        number;
+  wired_mb:         number;
+  limit_mb:         number;
+  swap_total_mb:    number;
+  swap_used_mb:     number;
+  pageouts:         number;
+  thrash_index:     number;
+  engine_active?:   boolean;
+  kv_cache_mb?:     number;
+  kv_pressure_pct?: number;
+  velocity?:        VelocityMetrics;
 }
 
 interface ChartPoint {
@@ -82,6 +95,37 @@ interface QuotaRecord {
   tokens_left:   string;
   resets_in:     string;
   status:        "healthy" | "warning" | "exhausted";
+}
+
+interface EngineModel {
+  name:               string;
+  parameter_size:     string;
+  quantization:       string;
+  context_length:     number;
+  size_mb:            number;
+  vram_mb:            number;
+  ram_mb:             number;
+  gpu_offload_pct:    number;
+  kv_cache_bytes:     number;
+  kv_cache_mb:        number;
+  kv_cache_wired_pct: number;
+  weights_wired_pct:  number;
+  architecture?: {
+    layers:          number;
+    heads:           number;
+    head_dim:        number;
+    precision_bytes: number;
+  };
+}
+
+interface EngineData {
+  status:             "active" | "idle" | "inactive";
+  engine:             string | null;
+  models:             EngineModel[];
+  total_kv_cache_mb:  number;
+  total_vram_mb:      number;
+  total_ram_mb:       number;
+  active_model_count: number;
 }
 
 type ConnectionStatus = "connecting" | "connected" | "reconnecting" | "error";
@@ -231,7 +275,7 @@ function StatusBadge({ status }: { status: ConnectionStatus }) {
 ══════════════════════════════════════════════════════════════════════ */
 const TOP_TABS: { id: TopLevelTab; label: string }[] = [
   { id: "telemetry", label: "System Telemetry" },
-  { id: "quotas",    label: "Agent Quotas"      },
+  { id: "quotas",    label: "Agent & Gateway Telemetry" },
 ];
 
 function TopTabBar({ active, onChange }: { active: TopLevelTab; onChange: (t: TopLevelTab) => void }) {
@@ -799,35 +843,453 @@ function QuotaCard({ record }: { record: QuotaRecord }) {
 }
 
 /* ══════════════════════════════════════════════════════════════════════
-   QUOTA GRID
+   LOCAL INFERENCE ENGINE CARDS (TIER 2)
 ══════════════════════════════════════════════════════════════════════ */
-function QuotaGrid({ quotas, loading, onRefresh }: {
-  quotas:     QuotaRecord[];
-  loading:    boolean;
-  onRefresh:  () => void;
-}) {
-  /* Loading skeleton — only shown on the very first fetch (empty list) */
-  if (loading && quotas.length === 0) {
-    return (
+function LocalEngineCard({ model, engine }: { model: EngineModel; engine: string | null }) {
+  const engineLabel = engine ? engine.toUpperCase() : "LOCAL LLM";
+  const offloadColor =
+    model.gpu_offload_pct >= 99 ? APPLE.mint : model.gpu_offload_pct >= 50 ? APPLE.blue : APPLE.orange;
+
+  return (
+    <div style={{
+      background: "rgba(255,255,255,0.045)",
+      backdropFilter: "blur(20px) saturate(160%)",
+      WebkitBackdropFilter: "blur(20px) saturate(160%)",
+      border: `1px solid ${APPLE.separator}`,
+      borderRadius: 16,
+      padding: "18px 20px",
+      marginBottom: 16,
+      display: "flex",
+      flexDirection: "column",
+      gap: 14,
+    }}>
+      {/* Top Header */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 8 }}>
+        <div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{
+              fontSize: 11, fontWeight: 700, letterSpacing: "0.06em",
+              color: APPLE.indigo, textTransform: "uppercase",
+              fontFamily: "-apple-system, BlinkMacSystemFont, sans-serif",
+            }}>
+              Active Local Inference
+            </span>
+            <span style={{
+              fontSize: 10, fontWeight: 600, color: APPLE.label3,
+              background: "rgba(255,255,255,0.08)", padding: "1px 6px",
+              borderRadius: 6,
+            }}>
+              Tier 2 Engine
+            </span>
+          </div>
+          <p style={{
+            margin: "4px 0 0", fontSize: 16, fontWeight: 700,
+            color: APPLE.label, fontFamily: "-apple-system, BlinkMacSystemFont, sans-serif",
+            letterSpacing: "-0.01em",
+          }}>
+            {model.name}
+          </p>
+          <p style={{ margin: "2px 0 0", fontSize: 11, color: APPLE.label3 }}>
+            {model.parameter_size ? `${model.parameter_size} params` : ""} · {model.quantization}
+          </p>
+        </div>
+
+        {/* Runtime Live Badge */}
+        <span style={{
+          display: "inline-flex", alignItems: "center", gap: 5,
+          fontSize: 11, fontWeight: 600, color: APPLE.mint,
+          background: `${APPLE.mint}18`, border: `1px solid ${APPLE.mint}35`,
+          borderRadius: 20, padding: "3px 10px",
+        }}>
+          <span style={{
+            width: 6, height: 6, borderRadius: "50%",
+            background: APPLE.mint, boxShadow: `0 0 6px 1px ${APPLE.mint}80`,
+          }} />
+          {engineLabel} · Running
+        </span>
+      </div>
+
+      {/* 3 Metric Columns */}
       <div style={{
         display: "grid",
-        gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))",
+        gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
         gap: 12,
+        padding: "12px 14px",
+        background: "rgba(0,0,0,0.25)",
+        borderRadius: 12,
+        border: "1px solid rgba(255,255,255,0.04)",
       }}>
-        {Array.from({ length: 6 }).map((_, i) => (
-          <div key={i} style={{
-            height: 160, borderRadius: 16,
-            background: "rgba(255,255,255,0.03)",
-            border: `1px solid ${APPLE.separator}`,
-            animation: `sentinel-pulse 1.4s ease-in-out ${i * 0.1}s infinite`,
-          }} />
-        ))}
+        {/* Context Window */}
+        <div>
+          <span style={{ fontSize: 10, fontWeight: 600, color: APPLE.label3, textTransform: "uppercase", letterSpacing: "0.04em" }}>
+            Context Window (N_ctx)
+          </span>
+          <div style={{ fontSize: 20, fontWeight: 700, color: APPLE.label, fontVariantNumeric: "tabular-nums", marginTop: 2 }}>
+            {fmtMB(model.context_length)} <span style={{ fontSize: 12, fontWeight: 500, color: APPLE.label3 }}>tokens</span>
+          </div>
+          <span style={{ fontSize: 10, color: APPLE.label3 }}>Attention capacity</span>
+        </div>
+
+        {/* KV Cache Memory */}
+        <div>
+          <span style={{ fontSize: 10, fontWeight: 600, color: APPLE.label3, textTransform: "uppercase", letterSpacing: "0.04em" }}>
+            KV-Cache Memory
+          </span>
+          <div style={{ fontSize: 20, fontWeight: 700, color: APPLE.indigo, fontVariantNumeric: "tabular-nums", marginTop: 2 }}>
+            {fmtMB(Math.round(model.kv_cache_mb))} <span style={{ fontSize: 12, fontWeight: 500, color: APPLE.label3 }}>MB</span>
+          </div>
+          <span style={{ fontSize: 10, color: model.kv_cache_wired_pct > 25 ? APPLE.orange : APPLE.label2 }}>
+            {model.kv_cache_wired_pct > 0 ? `${model.kv_cache_wired_pct.toFixed(1)}% of Wired VRAM` : "Dynamic"}
+          </span>
+        </div>
+
+        {/* GPU Offload */}
+        <div>
+          <span style={{ fontSize: 10, fontWeight: 600, color: APPLE.label3, textTransform: "uppercase", letterSpacing: "0.04em" }}>
+            GPU Offload
+          </span>
+          <div style={{ fontSize: 20, fontWeight: 700, color: offloadColor, fontVariantNumeric: "tabular-nums", marginTop: 2 }}>
+            {model.gpu_offload_pct.toFixed(1)} <span style={{ fontSize: 12, fontWeight: 500, color: APPLE.label3 }}>%</span>
+          </div>
+          <span style={{ fontSize: 10, color: APPLE.label3 }}>
+            {fmtMB(Math.round(model.vram_mb))} MB VRAM {model.ram_mb > 0 ? `· ${fmtMB(Math.round(model.ram_mb))} MB RAM` : "· 100% Metal"}
+          </span>
+        </div>
       </div>
-    );
-  }
+    </div>
+  );
+}
+
+function LocalEngineStandby() {
+  return (
+    <div style={{
+      background: "rgba(255,255,255,0.02)",
+      border: "1px dashed rgba(255,255,255,0.10)",
+      borderRadius: 14,
+      padding: "12px 16px",
+      marginBottom: 16,
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "space-between",
+      flexWrap: "wrap",
+      gap: 10,
+    }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <span style={{
+          width: 7, height: 7, borderRadius: "50%",
+          background: APPLE.label4, display: "inline-block",
+        }} />
+        <div>
+          <p style={{
+            margin: 0, fontSize: 12, fontWeight: 600,
+            color: APPLE.label2, fontFamily: "-apple-system, BlinkMacSystemFont, sans-serif",
+          }}>
+            Local Inference Daemon: Standby
+          </p>
+          <p style={{ margin: "2px 0 0", fontSize: 10, color: APPLE.label3 }}>
+            Ollama / LM Studio runtime offline (ports :11434 / :1234 idle)
+          </p>
+        </div>
+      </div>
+
+      <span style={{
+        fontSize: 10, fontWeight: 500, color: APPLE.label3,
+        background: "rgba(255,255,255,0.05)", padding: "2px 8px",
+        borderRadius: 12, border: `1px solid ${APPLE.separator}`,
+      }}>
+        0 Active Models
+      </span>
+    </div>
+  );
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   RUNAWAY AGENT LOOP WARNING BANNER
+══════════════════════════════════════════════════════════════════════ */
+function RunawayWarningBanner({ reason }: { reason?: string }) {
+  return (
+    <div
+      role="alert"
+      style={{
+        background: "linear-gradient(90deg, rgba(255, 69, 58, 0.20) 0%, rgba(255, 69, 58, 0.08) 100%)",
+        border: "1px solid rgba(255, 69, 58, 0.55)",
+        borderRadius: 14,
+        padding: "14px 18px",
+        marginBottom: 16,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        flexWrap: "wrap",
+        gap: 12,
+        boxShadow: "0 0 24px rgba(255, 69, 58, 0.18)",
+        animation: "sentinel-warning-glow 2s ease-in-out infinite",
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+        <span style={{ fontSize: 24, lineHeight: 1 }} aria-hidden="true">⚠️</span>
+        <div>
+          <p style={{
+            margin: 0,
+            fontSize: 13,
+            fontWeight: 700,
+            color: "#ff6961",
+            fontFamily: "-apple-system, BlinkMacSystemFont, sans-serif",
+            letterSpacing: "-0.01em",
+          }}>
+            ⚠️ Runaway Agent Loop Detected: Sustained token burn exceeding safety thresholds.
+          </p>
+          <p style={{
+            margin: "3px 0 0",
+            fontSize: 11,
+            color: "rgba(235, 235, 245, 0.75)",
+            fontFamily: "-apple-system, BlinkMacSystemFont, sans-serif",
+          }}>
+            {reason ? `${reason} · ` : ""}Sustained high token burn or request flood exceeding safety thresholds. Check active agent loops.
+          </p>
+        </div>
+      </div>
+
+      <span style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 5,
+        fontSize: 10,
+        fontWeight: 700,
+        textTransform: "uppercase",
+        letterSpacing: "0.06em",
+        color: APPLE.red,
+        background: "rgba(255, 69, 58, 0.22)",
+        border: "1px solid rgba(255, 69, 58, 0.45)",
+        borderRadius: 6,
+        padding: "4px 9px",
+        fontFamily: "-apple-system, BlinkMacSystemFont, sans-serif",
+      }}>
+        <span style={{
+          width: 6,
+          height: 6,
+          borderRadius: "50%",
+          background: APPLE.red,
+          boxShadow: `0 0 6px ${APPLE.red}`,
+        }} />
+        SAFETY INTERRUPT
+      </span>
+    </div>
+  );
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   TOKEN THROUGHPUT & VELOCITY METRIC STRIP
+══════════════════════════════════════════════════════════════════════ */
+function TokenVelocityStrip({ velocity }: { velocity: VelocityMetrics | null }) {
+  const status = velocity?.burn_rate_status ?? "nominal";
+  const statusCfg = {
+    nominal:  { text: "🟢 Nominal",  color: APPLE.mint,   bg: "rgba(48,209,88,0.12)",  border: "rgba(48,209,88,0.30)",  glow: "rgba(48,209,88,0.6)" },
+    elevated: { text: "🟡 Elevated", color: APPLE.orange, bg: "rgba(255,159,10,0.12)", border: "rgba(255,159,10,0.30)", glow: "rgba(255,159,10,0.6)" },
+    runaway:  { text: "🔴 Runaway",  color: APPLE.red,    bg: "rgba(255,69,58,0.16)",  border: "rgba(255,69,58,0.40)",  glow: "rgba(255,69,58,0.7)" },
+  }[status] ?? {
+    text: "🟢 Nominal",
+    color: APPLE.mint,
+    bg: "rgba(48,209,88,0.12)",
+    border: "rgba(48,209,88,0.30)",
+    glow: "rgba(48,209,88,0.6)",
+  };
+
+  const tpsVal = velocity?.tps !== undefined ? Number(velocity.tps).toFixed(1) : "0.0";
+  const tpmVal = velocity?.tpm !== undefined ? fmtMB(Math.round(Number(velocity.tpm))) : "0";
+  const rpmVal = velocity?.rpm !== undefined ? Number(velocity.rpm).toFixed(1) : "0.0";
+
+  return (
+    <div style={{
+      background: "rgba(255,255,255,0.045)",
+      backdropFilter: "blur(20px) saturate(160%)",
+      WebkitBackdropFilter: "blur(20px) saturate(160%)",
+      border: `1px solid ${status === "runaway" ? "rgba(255,69,58,0.45)" : APPLE.separator}`,
+      borderRadius: 16,
+      padding: "16px 20px",
+      marginBottom: 16,
+      display: "flex",
+      flexDirection: "column",
+      gap: 14,
+    }}>
+      {/* Strip Header */}
+      <div style={{
+        display: "flex",
+        justifyContent: "space-between",
+        alignItems: "center",
+        flexWrap: "wrap",
+        gap: 8,
+      }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{
+            fontSize: 11,
+            fontWeight: 700,
+            letterSpacing: "0.06em",
+            color: APPLE.cyan,
+            textTransform: "uppercase",
+            fontFamily: "-apple-system, BlinkMacSystemFont, sans-serif",
+          }}>
+            Token Throughput &amp; Velocity
+          </span>
+          <span style={{
+            fontSize: 10,
+            fontWeight: 600,
+            color: APPLE.label3,
+            background: "rgba(255,255,255,0.08)",
+            padding: "1px 6px",
+            borderRadius: 6,
+          }}>
+            OmniRoute Proxy
+          </span>
+        </div>
+
+        {/* Live TPS pulse indicator */}
+        <span style={{
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 6,
+          fontSize: 11,
+          fontWeight: 600,
+          color: statusCfg.color,
+          background: statusCfg.bg,
+          border: `1px solid ${statusCfg.border}`,
+          borderRadius: 20,
+          padding: "3px 10px",
+          fontFamily: "-apple-system, BlinkMacSystemFont, sans-serif",
+        }}>
+          <span style={{
+            width: 6,
+            height: 6,
+            borderRadius: "50%",
+            background: statusCfg.color,
+            boxShadow: `0 0 6px 1px ${statusCfg.glow}`,
+            animation: status === "runaway" ? "sentinel-pulse-fast 0.8s ease-in-out infinite" : "sentinel-pulse 2s ease-in-out infinite",
+          }} />
+          {statusCfg.text}
+        </span>
+      </div>
+
+      {/* 3 Metric Columns: Instantaneous TPS, Projected TPM, Rolling RPM */}
+      <div style={{
+        display: "grid",
+        gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+        gap: 12,
+        padding: "12px 14px",
+        background: "rgba(0,0,0,0.25)",
+        borderRadius: 12,
+        border: "1px solid rgba(255,255,255,0.04)",
+      }}>
+        {/* Instantaneous TPS */}
+        <div>
+          <span style={{
+            fontSize: 10,
+            fontWeight: 600,
+            color: APPLE.label3,
+            textTransform: "uppercase",
+            letterSpacing: "0.04em",
+          }}>
+            Instantaneous TPS
+          </span>
+          <div style={{
+            fontSize: 22,
+            fontWeight: 700,
+            color: status === "runaway" ? APPLE.red : status === "elevated" ? APPLE.orange : APPLE.label,
+            fontVariantNumeric: "tabular-nums",
+            fontFamily: "var(--font-geist-mono), monospace",
+            marginTop: 2,
+          }}>
+            {tpsVal} <span style={{ fontSize: 11, fontWeight: 500, color: APPLE.label3 }}>tokens/sec</span>
+          </div>
+          <span style={{ fontSize: 10, color: APPLE.label3 }}>
+            Live burn rate (ΔTokens/Δt)
+          </span>
+        </div>
+
+        {/* Projected TPM */}
+        <div>
+          <span style={{
+            fontSize: 10,
+            fontWeight: 600,
+            color: APPLE.label3,
+            textTransform: "uppercase",
+            letterSpacing: "0.04em",
+          }}>
+            Projected TPM
+          </span>
+          <div style={{
+            fontSize: 22,
+            fontWeight: 700,
+            color: APPLE.label,
+            fontVariantNumeric: "tabular-nums",
+            fontFamily: "var(--font-geist-mono), monospace",
+            marginTop: 2,
+          }}>
+            {tpmVal} <span style={{ fontSize: 11, fontWeight: 500, color: APPLE.label3 }}>tokens/min</span>
+          </div>
+          <span style={{ fontSize: 10, color: APPLE.label3 }}>
+            Extrapolated 60s window
+          </span>
+        </div>
+
+        {/* Rolling RPM */}
+        <div>
+          <span style={{
+            fontSize: 10,
+            fontWeight: 600,
+            color: APPLE.label3,
+            textTransform: "uppercase",
+            letterSpacing: "0.04em",
+          }}>
+            Rolling RPM
+          </span>
+          <div style={{
+            fontSize: 22,
+            fontWeight: 700,
+            color: APPLE.label,
+            fontVariantNumeric: "tabular-nums",
+            fontFamily: "var(--font-geist-mono), monospace",
+            marginTop: 2,
+          }}>
+            {rpmVal} <span style={{ fontSize: 11, fontWeight: 500, color: APPLE.label3 }}>req/min</span>
+          </div>
+          <span style={{ fontSize: 10, color: APPLE.label3 }}>
+            Active window requests
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   QUOTA & GATEWAY GRID
+══════════════════════════════════════════════════════════════════════ */
+function QuotaGrid({
+  quotas,
+  loading,
+  onRefresh,
+  engineData,
+  engineLoading,
+  velocity,
+}: {
+  quotas:        QuotaRecord[];
+  loading:       boolean;
+  onRefresh:     () => void;
+  engineData:    EngineData | null;
+  engineLoading: boolean;
+  velocity:      VelocityMetrics | null;
+}) {
+  // Filter out static baseline records (Claude, Codex, Moonshot/Kimi, Manus)
+  const activeQuotas = quotas.filter(
+    (q) => !["claude", "codex", "kimi", "manus"].includes(q.id.toLowerCase())
+  );
 
   return (
     <>
+      {/* ⚠️ Prominent Warning Banner if runaway loop detected */}
+      {velocity?.runaway_detected && (
+        <RunawayWarningBanner reason={velocity.reason} />
+      )}
+
       {/* Section header */}
       <div style={{
         display: "flex", alignItems: "center",
@@ -839,49 +1301,78 @@ function QuotaGrid({ quotas, loading, onRefresh }: {
             color: APPLE.label, letterSpacing: "0.01em",
             fontFamily: "-apple-system, BlinkMacSystemFont, sans-serif",
           }}>
-            AI Provider Quota Monitor
+            Agent &amp; Gateway Telemetry
           </p>
           <p style={{
             margin: "2px 0 0", fontSize: 11, color: APPLE.label3,
             fontFamily: "-apple-system, BlinkMacSystemFont, sans-serif",
           }}>
-            Rate-limit health across active agents &amp; models · auto-refreshes every 30 s
+            Live token throughput and local provider pool status via OmniRoute (:20128)
           </p>
         </div>
 
-        <button onClick={onRefresh} aria-label="Refresh quota data"
+        <button onClick={onRefresh} aria-label="Refresh telemetry data"
           style={{
             display: "inline-flex", alignItems: "center", gap: 5,
             padding: "4px 11px", fontSize: 11, fontWeight: 500,
-            color: loading ? APPLE.label3 : APPLE.label2,
+            color: loading || engineLoading ? APPLE.label3 : APPLE.label2,
             background: "rgba(255,255,255,0.06)",
             border: `1px solid ${APPLE.separator}`,
-            borderRadius: 8, cursor: loading ? "default" : "pointer",
+            borderRadius: 8, cursor: loading || engineLoading ? "default" : "pointer",
             fontFamily: "-apple-system, BlinkMacSystemFont, sans-serif",
             userSelect: "none",
-            opacity: loading ? 0.6 : 1,
+            opacity: loading || engineLoading ? 0.6 : 1,
             transition: "opacity 0.15s",
           }}
         >
           <IconRefresh
-            color={loading ? APPLE.label4 : APPLE.label3}
+            color={loading || engineLoading ? APPLE.label4 : APPLE.label3}
             size={11}
           />
-          {loading ? "Refreshing…" : "Refresh"}
+          {loading || engineLoading ? "Refreshing…" : "Refresh"}
         </button>
       </div>
 
-      {/* Card grid */}
-      <div style={{
-        display: "grid",
-        gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))",
-        gap: 12,
-        paddingBottom: 8,
-      }}>
-        {quotas.map((q) => (
-          <QuotaCard key={q.id} record={q} />
-        ))}
-      </div>
+      {/* Token Throughput & Velocity Metric Strip */}
+      <TokenVelocityStrip velocity={velocity} />
+
+      {/* Local Inference Engine Card or Standby */}
+      {engineData && engineData.status === "active" && engineData.models.length > 0 ? (
+        engineData.models.map((m) => (
+          <LocalEngineCard key={m.name} model={m} engine={engineData.engine} />
+        ))
+      ) : (
+        <LocalEngineStandby />
+      )}
+
+      {/* Verified Gateway Provider Pools Card grid */}
+      {loading && activeQuotas.length === 0 ? (
+        <div style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))",
+          gap: 12,
+        }}>
+          {Array.from({ length: 3 }).map((_, i) => (
+            <div key={i} style={{
+              height: 160, borderRadius: 16,
+              background: "rgba(255,255,255,0.03)",
+              border: `1px solid ${APPLE.separator}`,
+              animation: `sentinel-pulse 1.4s ease-in-out ${i * 0.1}s infinite`,
+            }} />
+          ))}
+        </div>
+      ) : (
+        <div style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))",
+          gap: 12,
+          paddingBottom: 8,
+        }}>
+          {activeQuotas.map((q) => (
+            <QuotaCard key={q.id} record={q} />
+          ))}
+        </div>
+      )}
     </>
   );
 }
@@ -1100,6 +1591,82 @@ function useQuotas(activeTab: TopLevelTab) {
 }
 
 /* ══════════════════════════════════════════════════════════════════════
+   HOOK — local engines & KV cache
+   Polls /api/engines for Ollama / LM Studio active models and KV telemetry.
+══════════════════════════════════════════════════════════════════════ */
+function useEngines(activeTab: TopLevelTab) {
+  const [engineData, setEngineData] = useState<EngineData | null>(null);
+  const [loading,    setLoading]    = useState(false);
+  const timerRef                    = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const fetch_ = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/engines`);
+      if (res.ok) {
+        const data: EngineData = await res.json();
+        setEngineData(data);
+      }
+    } catch { /* keep stale */ }
+    finally { setLoading(false); }
+  }, []);
+
+  useEffect(() => {
+    fetch_();
+  }, [fetch_]);
+
+  useEffect(() => {
+    if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
+    if (activeTab !== "quotas") return;
+    timerRef.current = setInterval(fetch_, 15_000);
+    return () => { if (timerRef.current) clearInterval(timerRef.current); };
+  }, [activeTab, fetch_]);
+
+  return { engineData, loading, refresh: fetch_ };
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   HOOK — token velocity & runaway detection
+   Syncs live from WebSocket telemetry frame or polls /api/velocity.
+══════════════════════════════════════════════════════════════════════ */
+function useVelocity(activeTab: TopLevelTab, wsVelocity?: VelocityMetrics | null) {
+  const [velocity, setVelocity] = useState<VelocityMetrics | null>(wsVelocity ?? null);
+  const timerRef                = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Sync when WebSocket telemetry provides an updated velocity payload
+  useEffect(() => {
+    if (wsVelocity) {
+      setVelocity(wsVelocity);
+    }
+  }, [wsVelocity]);
+
+  const fetch_ = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/velocity`);
+      if (res.ok) {
+        const data: VelocityMetrics = await res.json();
+        setVelocity(data);
+      }
+    } catch { /* keep stale */ }
+  }, []);
+
+  // Initial fetch on mount
+  useEffect(() => {
+    fetch_();
+  }, [fetch_]);
+
+  // Polling fallback while quotas tab is active
+  useEffect(() => {
+    if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
+    if (activeTab !== "quotas") return;
+    timerRef.current = setInterval(fetch_, 5_000);
+    return () => { if (timerRef.current) clearInterval(timerRef.current); };
+  }, [activeTab, fetch_]);
+
+  return { velocity, refresh: fetch_ };
+}
+
+/* ══════════════════════════════════════════════════════════════════════
    MAIN DASHBOARD
 ══════════════════════════════════════════════════════════════════════ */
 export default function Home() {
@@ -1119,6 +1686,14 @@ export default function Home() {
   const { data: histData, loading: histLoading } = useHistoryData(timeWindow);
   const spikes = useSpikes();
   const { quotas, loading: quotasLoading, refresh: refreshQuotas } = useQuotas(topTab);
+  const { engineData, loading: engineLoading, refresh: refreshEngines } = useEngines(topTab);
+  const { velocity, refresh: refreshVelocity } = useVelocity(topTab, latest?.velocity);
+
+  const handleRefreshQuotas = useCallback(() => {
+    refreshQuotas();
+    refreshEngines();
+    refreshVelocity();
+  }, [refreshQuotas, refreshEngines, refreshVelocity]);
 
   const displayHistory = timeWindow === "1m" ? liveHistory : histData;
 
@@ -1191,6 +1766,14 @@ export default function Home() {
     @keyframes sentinel-pulse {
       0%, 80%, 100% { opacity: 0.2; transform: scale(0.85); }
       40%           { opacity: 1;   transform: scale(1);    }
+    }
+    @keyframes sentinel-pulse-fast {
+      0%, 100% { opacity: 0.3; transform: scale(0.88); }
+      50%      { opacity: 1;   transform: scale(1.12); }
+    }
+    @keyframes sentinel-warning-glow {
+      0%, 100% { box-shadow: 0 0 16px rgba(255, 69, 58, 0.15); border-color: rgba(255, 69, 58, 0.45); }
+      50%      { box-shadow: 0 0 28px rgba(255, 69, 58, 0.35); border-color: rgba(255, 69, 58, 0.85); }
     }
   `;
 
@@ -1291,10 +1874,17 @@ export default function Home() {
             </>
           )}
 
-          {/* ── AGENT QUOTAS ── */}
+          {/* ── AGENT & GATEWAY TELEMETRY ── */}
           {topTab === "quotas" && (
             <main className="window-content">
-              <QuotaGrid quotas={quotas} loading={quotasLoading} onRefresh={refreshQuotas} />
+              <QuotaGrid
+                quotas={quotas}
+                loading={quotasLoading}
+                engineData={engineData}
+                engineLoading={engineLoading}
+                velocity={velocity ?? latest?.velocity ?? null}
+                onRefresh={handleRefreshQuotas}
+              />
             </main>
           )}
         </div>
@@ -1307,7 +1897,7 @@ export default function Home() {
                 : timeWindow === "5m" ? "5 min history" : "1 hour history"}
             </>
           ) : (
-            <>Sentinel-AI · AI Provider Quota Monitor · OmniRoute {OMNIROUTE_BASE}</>
+            <>Sentinel-AI · Agent &amp; Gateway Telemetry · OmniRoute {OMNIROUTE_BASE}</>
           )}
         </footer>
       </div>
