@@ -118,12 +118,14 @@ def compute_thrash_danger_index(
     """Compute a 0.0–1.0 memory pressure index.
 
     - If limit_mb <= 0, it is treated as 18432.0.
-    - Returns 1.0 immediately when wired_mb >= limit_mb or swap_used_mb >= 2048.0.
-    - Otherwise: score = (0.7 * mem_ratio) + (0.3 * swap_ratio), clamped to [0.0, 1.0],
-      rounded to 4 decimal places.
+    - Returns 1.0 immediately when wired_mb >= limit_mb or swap_used_mb > 2048.0.
+      (Strictly greater-than for the swap ceiling so that a 2048 MB total with
+      0 MB used does not incorrectly saturate the index.)
+    - Otherwise: score = (0.7 * mem_ratio) + (0.3 * swap_ratio), clamped to
+      [0.0, 1.0], rounded to 4 decimal places.
 
-    swap_used_mb may be passed as a float/int, a tuple/list (total, used), or a dict
-    with a "used" key; all forms are normalised before use.
+    swap_used_mb may be passed as a float/int, a tuple/list (total, used), or a
+    dict with a "used" key; all forms are normalised before use.
     """
     if limit_mb <= 0:
         limit_mb = 18432.0
@@ -140,7 +142,9 @@ def compute_thrash_danger_index(
     mem_ratio = wired_mb / limit_mb
     swap_ratio = min(1.0, swap_val / 2048.0)
 
-    if mem_ratio >= 1.0 or swap_val >= 2048.0:
+    # Use strict > so a swap total of exactly 2048 MB with 0 used doesn't
+    # falsely saturate the index.
+    if mem_ratio >= 1.0 or swap_val > 2048.0:
         return 1.0
 
     score = (0.7 * mem_ratio) + (0.3 * swap_ratio)

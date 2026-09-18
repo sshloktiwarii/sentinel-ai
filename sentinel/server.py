@@ -19,6 +19,7 @@ from sentinel.harvester import (
     get_gpu_wired_limit,
     get_pageout_count,
     get_swap_usage,
+    get_wired_memory_mb,
 )
 
 app = FastAPI(title="Sentinel-AI")
@@ -26,10 +27,8 @@ app = FastAPI(title="Sentinel-AI")
 def _collect_reading() -> dict:
     """Gather one telemetry snapshot and return it as a plain dict."""
     limit_mb = get_gpu_wired_limit()
-    wired_mb = limit_mb  # wired == limit is a worst-case placeholder;
-    # in production the real wired figure would come from a separate sysctl.
-    # We expose limit_mb as a separate field so callers can see both.
-    total_swap, used_swap = get_swap_usage()
+    wired_mb = get_wired_memory_mb()          # active wired footprint, not the ceiling
+    total_swap, used_swap = get_swap_usage()  # used_swap is a plain float
     pageouts = get_pageout_count()
     thrash_index = compute_thrash_danger_index(wired_mb, limit_mb, used_swap)
     ts = time.time()
