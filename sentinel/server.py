@@ -40,20 +40,20 @@ app.add_middleware(
 
 def _collect_reading() -> dict:
     """Gather one telemetry snapshot and return it as a plain dict."""
-    limit_mb = get_gpu_wired_limit()
-    wired_mb = get_wired_memory_mb()
+    limit_mb     = get_gpu_wired_limit()
+    wired_mb     = get_wired_memory_mb()
     total_swap, used_swap = get_swap_usage()
-    pageouts = get_pageout_count()
+    pageouts     = get_pageout_count()
     thrash_index = compute_thrash_danger_index(wired_mb, limit_mb, used_swap)
-    ts = time.time()
+    ts           = time.time()
     return {
-        "timestamp":    ts,
-        "wired_mb":     wired_mb,
-        "limit_mb":     limit_mb,
+        "timestamp":     ts,
+        "wired_mb":      wired_mb,
+        "limit_mb":      limit_mb,
         "swap_total_mb": total_swap,
-        "swap_used_mb": used_swap,
-        "pageouts":     pageouts,
-        "thrash_index": thrash_index,
+        "swap_used_mb":  used_swap,
+        "pageouts":      pageouts,
+        "thrash_index":  thrash_index,
     }
 
 # ── Lifecycle ─────────────────────────────────────────────────────────────────
@@ -78,11 +78,11 @@ async def ws_telemetry(websocket: WebSocket) -> None:
             await asyncio.get_event_loop().run_in_executor(
                 None,
                 lambda r=reading: insert_telemetry(
-                    timestamp=r["timestamp"],
-                    wired_mb=r["wired_mb"],
-                    swap_used_mb=r["swap_used_mb"],
-                    pageouts=r["pageouts"],
-                    thrash_index=r["thrash_index"],
+                    timestamp    = r["timestamp"],
+                    wired_mb     = r["wired_mb"],
+                    swap_used_mb = r["swap_used_mb"],
+                    pageouts     = r["pageouts"],
+                    thrash_index = r["thrash_index"],
                 ),
             )
 
@@ -96,8 +96,8 @@ async def ws_telemetry(websocket: WebSocket) -> None:
 @app.get("/api/history")
 async def api_history(
     window: Literal["1m", "5m", "1h"] = Query(
-        default="1m",
-        description="Time window: '1m' (60 s raw), '5m' (300 s sampled), '1h' (3600 s bucketed).",
+        default     = "1m",
+        description = "Time window: '1m' (60 s raw), '5m' (300 s sampled), '1h' (3600 s bucketed).",
     )
 ) -> list[dict]:
     """Return historical telemetry for the requested time window.
@@ -130,8 +130,11 @@ async def api_spikes() -> list[dict]:
 async def api_quotas() -> list[dict]:
     """Return quota health snapshot for all configured AI providers.
 
-    Each item contains: provider, model, remaining_pct, tokens_left,
-    resets_in, status, action_label, action_value.
+    Each item contains: id, provider, model, remaining_pct, tokens_left,
+    resets_in, status.
+
+    Never returns an empty list — falls back to baseline defaults when live
+    provider data is unavailable.
     """
     rows = await asyncio.get_event_loop().run_in_executor(None, get_all_quotas)
     return rows
