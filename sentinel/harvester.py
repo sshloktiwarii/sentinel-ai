@@ -121,14 +121,26 @@ def compute_thrash_danger_index(
     - Returns 1.0 immediately when wired_mb >= limit_mb or swap_used_mb >= 2048.0.
     - Otherwise: score = (0.7 * mem_ratio) + (0.3 * swap_ratio), clamped to [0.0, 1.0],
       rounded to 4 decimal places.
+
+    swap_used_mb may be passed as a float/int, a tuple/list (total, used), or a dict
+    with a "used" key; all forms are normalised before use.
     """
     if limit_mb <= 0:
         limit_mb = 18432.0
 
-    mem_ratio = wired_mb / limit_mb
-    swap_ratio = min(1.0, swap_used_mb / 2048.0)
+    # --- normalise swap_used_mb to a plain float ---
+    if isinstance(swap_used_mb, (tuple, list)):
+        # Convention: (total_mb, used_mb); fall back to index 0 if only one element.
+        swap_val = float(swap_used_mb[1]) if len(swap_used_mb) > 1 else float(swap_used_mb[0])
+    elif isinstance(swap_used_mb, dict):
+        swap_val = float(swap_used_mb.get("used", 0.0))
+    else:
+        swap_val = float(swap_used_mb or 0.0)
 
-    if mem_ratio >= 1.0 or swap_used_mb >= 2048.0:
+    mem_ratio = wired_mb / limit_mb
+    swap_ratio = min(1.0, swap_val / 2048.0)
+
+    if mem_ratio >= 1.0 or swap_val >= 2048.0:
         return 1.0
 
     score = (0.7 * mem_ratio) + (0.3 * swap_ratio)
