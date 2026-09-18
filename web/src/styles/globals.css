@@ -1,27 +1,161 @@
 @import "tailwindcss";
 
-/* ── Base ──────────────────────────────────────────────────────────────── */
+/* ── Color scheme ──────────────────────────────────────────────────────── */
 html {
   color-scheme: dark;
 }
 
 body {
-  background-color: #0a0a0f;
-  color: #fafafa;
+  background-color: #121214;
+  color: #f2f2f7;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  font-family: -apple-system, "SF Pro Display", "SF Pro Text", "Helvetica Neue",
+    Arial, sans-serif;
 }
 
-/* ── Glassmorphism card ────────────────────────────────────────────────── */
-.glass-card {
-  border-radius: 1rem;
+/* ── macOS-style glass card ────────────────────────────────────────────── */
+.mac-card {
+  border-radius: 12px;
   border: 1px solid rgba(255, 255, 255, 0.08);
-  background: rgba(255, 255, 255, 0.04);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-  transition: border-color 0.2s ease;
+  background: rgba(28, 28, 30, 0.75);
+  backdrop-filter: blur(40px) saturate(180%);
+  -webkit-backdrop-filter: blur(40px) saturate(180%);
+  transition: border-color 0.15s ease;
 }
 
-.glass-card:hover {
+.mac-card:hover {
   border-color: rgba(255, 255, 255, 0.13);
+}
+
+/* ── Window chrome ─────────────────────────────────────────────────────── */
+.mac-window {
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(28, 28, 30, 0.85);
+  backdrop-filter: blur(40px) saturate(180%);
+  -webkit-backdrop-filter: blur(40px) saturate(180%);
+  overflow: hidden;
+  box-shadow:
+    0 0 0 0.5px rgba(0, 0, 0, 0.5),
+    0 20px 60px rgba(0, 0, 0, 0.6),
+    0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+.mac-titlebar {
+  display: flex;
+  align-items: center;
+  height: 44px;
+  padding: 0 16px;
+  background: rgba(40, 40, 42, 0.90);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  position: relative;
+  flex-shrink: 0;
+}
+
+/* ── Traffic lights ────────────────────────────────────────────────────── */
+.traffic-lights {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  z-index: 1;
+}
+
+.traffic-light {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.traffic-light-close  { background: #ff5f57; box-shadow: 0 0 0 0.5px rgba(0,0,0,0.25); }
+.traffic-light-min    { background: #febc2e; box-shadow: 0 0 0 0.5px rgba(0,0,0,0.25); }
+.traffic-light-expand { background: #28c840; box-shadow: 0 0 0 0.5px rgba(0,0,0,0.25); }
+
+/* ── Segmented control ─────────────────────────────────────────────────── */
+.seg-control {
+  display: inline-flex;
+  align-items: center;
+  background: rgba(118, 118, 128, 0.18);
+  border-radius: 9px;
+  padding: 2px;
+  gap: 2px;
+}
+
+.seg-btn {
+  padding: 4px 14px;
+  border-radius: 7px;
+  font-size: 12px;
+  font-weight: 500;
+  color: rgba(235, 235, 245, 0.6);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  border: none;
+  background: transparent;
+  white-space: nowrap;
+}
+
+.seg-btn:hover {
+  color: rgba(235, 235, 245, 0.9);
+}
+
+.seg-btn-active {
+  background: rgba(255, 255, 255, 0.12);
+  color: #f2f2f7;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+
+/* ── Status pill ───────────────────────────────────────────────────────── */
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: 20px;
+  font-size: 11px;
+  font-weight: 500;
+  border: 1px solid transparent;
+}
+
+/* ── Metric value typography ───────────────────────────────────────────── */
+.metric-value {
+  font-family: -apple-system, "SF Pro Display", "Helvetica Neue", sans-serif;
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: -0.5px;
+  line-height: 1;
+  color: #f2f2f7;
+}
+
+.metric-label {
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgba(235, 235, 245, 0.5);
+}
+
+.metric-sub {
+  font-size: 12px;
+  color: rgba(235, 235, 245, 0.4);
+  margin-top: 4px;
+}
+
+/* ── Dividers ──────────────────────────────────────────────────────────── */
+.mac-divider {
+  height: 1px;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+/* ── Scrollbar ─────────────────────────────────────────────────────────── */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 3px;
 }
