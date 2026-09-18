@@ -5,7 +5,13 @@
  * Authentic Liquid Glass materials, SF Pro typography, semantic state colours.
  */
 
-import { useEffect, useRef, useState, useCallback } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  useCallback,
+  Fragment,
+} from "react";
 import { Geist_Mono } from "next/font/google";
 import { clsx } from "clsx";
 import {
@@ -16,57 +22,76 @@ import {
   YAxis,
   Tooltip,
   CartesianGrid,
+  ReferenceLine,
 } from "recharts";
 
 /* ── Font ─────────────────────────────────────────────────────────────── */
 const geistMono = Geist_Mono({
   variable: "--font-geist-mono",
-  subsets:  ["latin"],
+  subsets: ["latin"],
 });
 
 /* ── Apple semantic palette ───────────────────────────────────────────── */
 const APPLE = {
-  blue:        "#0a84ff",
-  mint:        "#30d158",
-  orange:      "#ff9f0a",
-  red:         "#ff453a",
-  cyan:        "#32ade6",
-  indigo:      "#5e5ce6",
-  label:       "#f2f2f7",
-  label2:      "rgba(235,235,245,0.6)",
-  label3:      "rgba(235,235,245,0.3)",
-  label4:      "rgba(235,235,245,0.16)",
-  separator:   "rgba(255,255,255,0.08)",
-  fillTertiary:"rgba(118,118,128,0.18)",
+  blue:         "#0a84ff",
+  mint:         "#30d158",
+  orange:       "#ff9f0a",
+  red:          "#ff453a",
+  cyan:         "#32ade6",
+  indigo:       "#5e5ce6",
+  label:        "#f2f2f7",
+  label2:       "rgba(235,235,245,0.6)",
+  label3:       "rgba(235,235,245,0.3)",
+  label4:       "rgba(235,235,245,0.16)",
+  separator:    "rgba(255,255,255,0.08)",
+  fillTertiary: "rgba(118,118,128,0.18)",
 } as const;
 
 /* ── Types ────────────────────────────────────────────────────────────── */
 interface TelemetryFrame {
-  timestamp:    number;
-  wired_mb:     number;
-  limit_mb:     number;
-  swap_total_mb:number;
-  swap_used_mb: number;
-  pageouts:     number;
-  thrash_index: number;
+  timestamp:     number;
+  wired_mb:      number;
+  limit_mb:      number;
+  swap_total_mb: number;
+  swap_used_mb:  number;
+  pageouts:      number;
+  thrash_index:  number;
 }
 
 interface ChartPoint {
   t:            string;
+  ts:           number; // raw unix timestamp for spike matching
   wired_mb:     number;
   swap_used_mb: number;
   pageouts:     number;
   thrash_index: number;
 }
 
-type ConnectionStatus = "connecting" | "connected" | "reconnecting" | "error";
-type ActiveView       = "overview"  | "memory"    | "swap"          | "pressure";
+interface SpikeRecord {
+  timestamp:    number;
+  thrash_index: number;
+  wired_mb:     number;
+  swap_used_mb: number;
+  pageouts:     number;
+}
 
+type ConnectionStatus = "connecting" | "connected" | "reconnecting" | "error";
+type ActiveView       = "overview"  | "memory"    | "swap"         | "pressure";
+type TimeWindow       = "1m"        | "5m"        | "1h";
+
+const API_BASE      = "http://127.0.0.1:8000";
 const WS_URL        = "ws://127.0.0.1:8000/ws/telemetry";
 const MAX_POINTS    = 60;
 const BASE_RETRY_MS = 1_500;
 const MAX_RETRY_MS  = 30_000;
 const VRAM_BUDGET   = 18_432; // MB — M-series 18 GB unified memory
+
+// How often to re-fetch historical data when in 5m/1h mode (ms)
+const HISTORY_POLL_MS: Record<TimeWindow, number> = {
+  "1m": 0,       // not used — live stream
+  "5m": 15_000,  // refresh every 15 s
+  "1h": 60_000,  // refresh every 60 s
+};
 
 /* ── Helpers ──────────────────────────────────────────────────────────── */
 function fmtTime(ts: number): string {
@@ -80,10 +105,23 @@ function fmtMB(n: number): string {
 function toChartPoint(f: TelemetryFrame): ChartPoint {
   return {
     t:            fmtTime(f.timestamp),
+    ts:           f.timestamp,
     wired_mb:     Math.round(f.wired_mb),
     swap_used_mb: Math.round(f.swap_used_mb * 10) / 10,
     pageouts:     f.pageouts,
     thrash_index: Math.round(f.thrash_index * 1000) / 1000,
+  };
+}
+
+/** Convert a raw history row (no limit_mb / swap_total_mb) to a ChartPoint. */
+function historyRowToChartPoint(row: Record<string, number>): ChartPoint {
+  return {
+    t:            fmtTime(row.timestamp),
+    ts:           row.timestamp,
+    wired_mb:     Math.round(row.wired_mb),
+    swap_used_mb: Math.round(row.swap_used_mb * 10) / 10,
+    pageouts:     Math.round(row.pageouts),
+    thrash_index: Math.round(row.thrash_index * 1000) / 1000,
   };
 }
 
@@ -101,21 +139,42 @@ function thrashLabel(index: number): string {
   return "Nominal";
 }
 
+/* ── Alert-triangle icon (inline SVG, no extra dep) ──────────────────── */
+function IconAlertTriangle({ color = APPLE.orange, size = 14 }: { color?: string; size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke={color}
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+      <line x1="12" y1="9" x2="12" y2="13" />
+      <line x1="12" y1="17" x2="12.01" y2="17" />
+    </svg>
+  );
+}
+
 /* ══════════════════════════════════════════════════════════════════════
    TRAFFIC LIGHTS
 ══════════════════════════════════════════════════════════════════════ */
 function TrafficLights() {
   return (
     <div className="traffic-lights" aria-hidden="true">
-      <span className="tl tl-close"  title="Close"    />
-      <span className="tl tl-min"    title="Minimise" />
-      <span className="tl tl-zoom"   title="Zoom"     />
+      <span className="tl tl-close" title="Close" />
+      <span className="tl tl-min"   title="Minimise" />
+      <span className="tl tl-zoom"  title="Zoom" />
     </div>
   );
 }
 
 /* ══════════════════════════════════════════════════════════════════════
-   STATUS BADGE  –  mint dot with radial glow when live
+   STATUS BADGE
 ══════════════════════════════════════════════════════════════════════ */
 function StatusBadge({ status }: { status: ConnectionStatus }) {
   const cfg: Record<ConnectionStatus, { color: string; label: string; glow: boolean }> = {
@@ -130,8 +189,8 @@ function StatusBadge({ status }: { status: ConnectionStatus }) {
     <span
       className="status-badge"
       style={{
-        background:   `${color}18`,
-        borderColor:  `${color}38`,
+        background:  `${color}18`,
+        borderColor: `${color}38`,
         color,
       }}
     >
@@ -148,7 +207,7 @@ function StatusBadge({ status }: { status: ConnectionStatus }) {
 }
 
 /* ══════════════════════════════════════════════════════════════════════
-   SEGMENTED CONTROL
+   SEGMENTED CONTROL  (view picker)
 ══════════════════════════════════════════════════════════════════════ */
 const VIEWS: { id: ActiveView; label: string }[] = [
   { id: "overview", label: "Overview" },
@@ -182,23 +241,91 @@ function SegmentedControl({
 }
 
 /* ══════════════════════════════════════════════════════════════════════
-   VRAM GAUGE  –  native progress bar + wired vs budget
+   TIME WINDOW PICKER  –  sliding capsule indicator, Apple HIG style
 ══════════════════════════════════════════════════════════════════════ */
-function VramGauge({
-  wired_mb,
-  limit_mb,
+const TIME_WINDOWS: TimeWindow[] = ["1m", "5m", "1h"];
+
+function TimeWindowPicker({
+  active,
+  onChange,
 }: {
-  wired_mb: number;
-  limit_mb: number;
+  active:   TimeWindow;
+  onChange: (w: TimeWindow) => void;
 }) {
+  const idx = TIME_WINDOWS.indexOf(active);
+
+  return (
+    <div
+      className="tw-track"
+      role="group"
+      aria-label="Time window"
+      style={{
+        position:     "relative",
+        display:      "inline-flex",
+        background:   APPLE.fillTertiary,
+        borderRadius: 8,
+        padding:      2,
+        gap:          0,
+        border:       `1px solid ${APPLE.separator}`,
+      }}
+    >
+      {/* Sliding capsule */}
+      <span
+        aria-hidden="true"
+        style={{
+          position:     "absolute",
+          top:          2,
+          bottom:       2,
+          left:         `calc(${idx} * (100% - 4px) / ${TIME_WINDOWS.length} + 2px)`,
+          width:        `calc((100% - 4px) / ${TIME_WINDOWS.length})`,
+          background:   "rgba(255,255,255,0.12)",
+          borderRadius: 6,
+          border:       `1px solid rgba(255,255,255,0.18)`,
+          transition:   "left 0.18s cubic-bezier(0.4, 0, 0.2, 1)",
+          pointerEvents:"none",
+          boxShadow:    "0 1px 3px rgba(0,0,0,0.4)",
+        }}
+      />
+      {TIME_WINDOWS.map((w) => (
+        <button
+          key={w}
+          aria-pressed={active === w}
+          onClick={() => onChange(w)}
+          style={{
+            position:       "relative",
+            zIndex:         1,
+            minWidth:       40,
+            padding:        "3px 10px",
+            fontSize:       11,
+            fontWeight:     active === w ? 600 : 400,
+            color:          active === w ? APPLE.label : APPLE.label3,
+            background:     "transparent",
+            border:         "none",
+            borderRadius:   6,
+            cursor:         "pointer",
+            letterSpacing:  "0.02em",
+            transition:     "color 0.15s",
+            fontFamily:     "-apple-system, BlinkMacSystemFont, sans-serif",
+            userSelect:     "none",
+          }}
+        >
+          {w}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   VRAM GAUGE
+══════════════════════════════════════════════════════════════════════ */
+function VramGauge({ wired_mb, limit_mb }: { wired_mb: number; limit_mb: number }) {
   const budget   = limit_mb > 0 ? limit_mb : VRAM_BUDGET;
   const pct      = Math.min((wired_mb / budget) * 100, 100);
-  const barColor =
-    pct >= 80 ? APPLE.red : pct >= 55 ? APPLE.orange : APPLE.blue;
+  const barColor = pct >= 80 ? APPLE.red : pct >= 55 ? APPLE.orange : APPLE.blue;
 
   return (
     <div className="vram-gauge">
-      {/* Track */}
       <div className="vram-track">
         <div
           className="vram-fill"
@@ -209,7 +336,6 @@ function VramGauge({
           }}
         />
       </div>
-      {/* Labels */}
       <div className="vram-labels">
         <span style={{ color: barColor, fontVariantNumeric: "tabular-nums" }}>
           {fmtMB(Math.round(wired_mb))} MB
@@ -223,7 +349,7 @@ function VramGauge({
 }
 
 /* ══════════════════════════════════════════════════════════════════════
-   THRASH METER  –  segmented indicator bar
+   THRASH METER
 ══════════════════════════════════════════════════════════════════════ */
 function ThrashMeter({ index }: { index: number }) {
   const color = thrashColor(index);
@@ -253,7 +379,7 @@ function ThrashMeter({ index }: { index: number }) {
 }
 
 /* ══════════════════════════════════════════════════════════════════════
-   STAT CARD  –  glass tile
+   STAT CARD
 ══════════════════════════════════════════════════════════════════════ */
 interface StatCardProps {
   label:    string;
@@ -273,7 +399,7 @@ function StatCard({ label, accent, children }: StatCardProps) {
 }
 
 /* ══════════════════════════════════════════════════════════════════════
-   CHART TOOLTIP  –  native popover style
+   CHART TOOLTIP
 ══════════════════════════════════════════════════════════════════════ */
 function ChartTooltip({
   active,
@@ -291,7 +417,10 @@ function ChartTooltip({
   return (
     <div className="chart-tooltip">
       <span className="chart-tooltip-time">{label}</span>
-      <span className="chart-tooltip-value" style={{ fontVariantNumeric: "tabular-nums" }}>
+      <span
+        className="chart-tooltip-value"
+        style={{ fontVariantNumeric: "tabular-nums" }}
+      >
         {payload[0].value.toLocaleString("en-US")}
         {unit ? <span className="chart-tooltip-unit"> {unit}</span> : null}
       </span>
@@ -303,17 +432,43 @@ function ChartTooltip({
    AREA CHART WRAPPER
 ══════════════════════════════════════════════════════════════════════ */
 interface MiniChartProps {
-  data:    ChartPoint[];
-  dataKey: keyof ChartPoint;
-  color:   string;
-  unit:    string;
-  domain?: [number | string, number | string];
+  data:          ChartPoint[];
+  dataKey:       keyof ChartPoint;
+  color:         string;
+  unit:          string;
+  domain?:       [number | string, number | string];
+  spikeMarkers?: SpikeRecord[]; // vertical reference lines for spike timestamps
 }
 
-function MiniChart({ data, dataKey, color, unit, domain }: MiniChartProps) {
+function MiniChart({ data, dataKey, color, unit, domain, spikeMarkers }: MiniChartProps) {
   const gradId    = `grad-${String(dataKey)}`;
   const axisColor = APPLE.label4;
   const gridColor = "rgba(255,255,255,0.04)";
+
+  // Determine which spike timestamps are visible in the current data range
+  const visibleTs = new Set(data.map((p) => p.ts));
+  const firstTs   = data[0]?.ts  ?? 0;
+  const lastTs    = data[data.length - 1]?.ts ?? 0;
+
+  const visibleSpikes =
+    spikeMarkers?.filter(
+      (s) => s.timestamp >= firstTs && s.timestamp <= lastTs
+    ) ?? [];
+
+  // Find the chart point with the closest timestamp to each spike
+  function closestLabel(spikeTs: number): string {
+    if (!data.length) return "";
+    let best = data[0];
+    let bestDiff = Math.abs(data[0].ts - spikeTs);
+    for (const pt of data) {
+      const diff = Math.abs(pt.ts - spikeTs);
+      if (diff < bestDiff) {
+        bestDiff = diff;
+        best     = pt;
+      }
+    }
+    return best.t;
+  }
 
   return (
     <ResponsiveContainer width="100%" height={168}>
@@ -356,6 +511,23 @@ function MiniChart({ data, dataKey, color, unit, domain }: MiniChartProps) {
           cursor={{ stroke: axisColor, strokeWidth: 1 }}
         />
 
+        {/* Spike reference lines */}
+        {visibleSpikes.map((s) => (
+          <ReferenceLine
+            key={s.timestamp}
+            x={closestLabel(s.timestamp)}
+            stroke={APPLE.orange}
+            strokeWidth={1.5}
+            strokeDasharray="3 3"
+            label={{
+              value:    "⚠",
+              position: "top",
+              fill:     APPLE.orange,
+              fontSize: 10,
+            }}
+          />
+        ))}
+
         <Area
           type="monotone"
           dataKey={dataKey}
@@ -377,14 +549,265 @@ function MiniChart({ data, dataKey, color, unit, domain }: MiniChartProps) {
 function ChartCard({
   title,
   children,
+  toolbar,
 }: {
   title:    string;
   children: React.ReactNode;
+  toolbar?: React.ReactNode;
 }) {
   return (
     <div className="chart-card">
-      <p className="chart-card-title">{title}</p>
+      <div
+        style={{
+          display:        "flex",
+          alignItems:     "center",
+          justifyContent: "space-between",
+          marginBottom:   4,
+        }}
+      >
+        <p className="chart-card-title" style={{ margin: 0 }}>
+          {title}
+        </p>
+        {toolbar}
+      </div>
       {children}
+    </div>
+  );
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   SPIKES INSPECTOR  –  compact dropdown sheet
+══════════════════════════════════════════════════════════════════════ */
+function SpikesInspector({
+  spikes,
+  onSelect,
+}: {
+  spikes:   SpikeRecord[];
+  onSelect: (s: SpikeRecord) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref             = useRef<HTMLDivElement>(null);
+
+  // Close on outside click
+  useEffect(() => {
+    if (!open) return;
+    function handle(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handle);
+    return () => document.removeEventListener("mousedown", handle);
+  }, [open]);
+
+  return (
+    <div ref={ref} style={{ position: "relative", display: "inline-block" }}>
+      {/* Trigger button */}
+      <button
+        onClick={() => setOpen((o) => !o)}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        style={{
+          display:      "inline-flex",
+          alignItems:   "center",
+          gap:          6,
+          padding:      "4px 10px",
+          fontSize:     12,
+          fontWeight:   500,
+          color:        APPLE.orange,
+          background:   `${APPLE.orange}14`,
+          border:       `1px solid ${APPLE.orange}30`,
+          borderRadius: 8,
+          cursor:       "pointer",
+          fontFamily:   "-apple-system, BlinkMacSystemFont, sans-serif",
+          userSelect:   "none",
+          transition:   "background 0.12s",
+          whiteSpace:   "nowrap",
+        }}
+      >
+        <IconAlertTriangle color={APPLE.orange} size={13} />
+        Previous Spikes
+        {spikes.length > 0 && (
+          <span
+            style={{
+              background:   APPLE.orange,
+              color:        "#000",
+              borderRadius: 10,
+              fontSize:     10,
+              fontWeight:   700,
+              padding:      "0 5px",
+              lineHeight:   "16px",
+              minWidth:     16,
+              textAlign:    "center",
+            }}
+          >
+            {spikes.length}
+          </span>
+        )}
+      </button>
+
+      {/* Dropdown sheet */}
+      {open && (
+        <div
+          role="listbox"
+          aria-label="Previous spike events"
+          style={{
+            position:     "absolute",
+            top:          "calc(100% + 6px)",
+            right:        0,
+            zIndex:       100,
+            minWidth:     280,
+            background:   "rgba(28,28,30,0.92)",
+            backdropFilter: "blur(20px) saturate(180%)",
+            WebkitBackdropFilter: "blur(20px) saturate(180%)",
+            border:       `1px solid ${APPLE.separator}`,
+            borderRadius: 12,
+            boxShadow:    "0 8px 32px rgba(0,0,0,0.6)",
+            overflow:     "hidden",
+          }}
+        >
+          {/* Sheet header */}
+          <div
+            style={{
+              padding:      "10px 14px 8px",
+              borderBottom: `1px solid ${APPLE.separator}`,
+              display:      "flex",
+              alignItems:   "center",
+              gap:          6,
+            }}
+          >
+            <IconAlertTriangle color={APPLE.orange} size={12} />
+            <span
+              style={{
+                fontSize:      12,
+                fontWeight:    600,
+                color:         APPLE.label2,
+                fontFamily:    "-apple-system, BlinkMacSystemFont, sans-serif",
+                letterSpacing: "0.02em",
+              }}
+            >
+              Spike Events — last 24 h
+            </span>
+          </div>
+
+          {spikes.length === 0 ? (
+            <div
+              style={{
+                padding:   "16px 14px",
+                fontSize:  12,
+                color:     APPLE.label3,
+                fontFamily:"-apple-system, BlinkMacSystemFont, sans-serif",
+                textAlign: "center",
+              }}
+            >
+              No spikes detected
+            </div>
+          ) : (
+            <ul
+              style={{
+                listStyle: "none",
+                margin:    0,
+                padding:   "4px 0",
+              }}
+            >
+              {spikes.map((s, i) => {
+                const tc = thrashColor(s.thrash_index);
+                return (
+                  <li key={s.timestamp}>
+                    <button
+                      role="option"
+                      aria-selected={false}
+                      onClick={() => {
+                        onSelect(s);
+                        setOpen(false);
+                      }}
+                      style={{
+                        display:    "block",
+                        width:      "100%",
+                        textAlign:  "left",
+                        padding:    "8px 14px",
+                        background: "transparent",
+                        border:     "none",
+                        cursor:     "pointer",
+                        fontFamily: "-apple-system, BlinkMacSystemFont, sans-serif",
+                        transition: "background 0.1s",
+                      }}
+                      onMouseEnter={(e) =>
+                        ((e.currentTarget as HTMLButtonElement).style.background =
+                          "rgba(255,255,255,0.06)")
+                      }
+                      onMouseLeave={(e) =>
+                        ((e.currentTarget as HTMLButtonElement).style.background =
+                          "transparent")
+                      }
+                    >
+                      <div
+                        style={{
+                          display:        "flex",
+                          justifyContent: "space-between",
+                          alignItems:     "baseline",
+                          marginBottom:   2,
+                        }}
+                      >
+                        <span style={{ fontSize: 11, color: APPLE.label3 }}>
+                          #{i + 1} — {fmtTime(s.timestamp)}
+                        </span>
+                        <span
+                          style={{
+                            fontSize:          11,
+                            fontWeight:        600,
+                            color:             tc,
+                            fontVariantNumeric:"tabular-nums",
+                          }}
+                        >
+                          {thrashLabel(s.thrash_index)}
+                        </span>
+                      </div>
+                      <div
+                        style={{
+                          display:    "flex",
+                          gap:        12,
+                          fontSize:   11,
+                          color:      APPLE.label2,
+                          fontVariantNumeric: "tabular-nums",
+                        }}
+                      >
+                        <span>
+                          Thrash:{" "}
+                          <span style={{ color: tc }}>
+                            {s.thrash_index.toFixed(3)}
+                          </span>
+                        </span>
+                        <span>
+                          Wired:{" "}
+                          <span style={{ color: APPLE.blue }}>
+                            {fmtMB(Math.round(s.wired_mb))} MB
+                          </span>
+                        </span>
+                        <span>
+                          Swap:{" "}
+                          <span style={{ color: APPLE.cyan }}>
+                            {fmtMB(Math.round(s.swap_used_mb))} MB
+                          </span>
+                        </span>
+                      </div>
+                    </button>
+                    {i < spikes.length - 1 && (
+                      <div
+                        style={{
+                          height:     1,
+                          background: APPLE.separator,
+                          margin:     "0 14px",
+                        }}
+                      />
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -395,9 +818,15 @@ function ChartCard({
 function OverviewGrid({
   latest,
   history,
+  spikes,
+  timeWindow,
+  onTimeWindowChange,
 }: {
-  latest:  TelemetryFrame | null;
-  history: ChartPoint[];
+  latest:              TelemetryFrame | null;
+  history:             ChartPoint[];
+  spikes:              SpikeRecord[];
+  timeWindow:          TimeWindow;
+  onTimeWindowChange:  (w: TimeWindow) => void;
 }) {
   const tIdx   = latest?.thrash_index ?? 0;
   const tColor = latest ? thrashColor(tIdx) : APPLE.label4;
@@ -407,13 +836,18 @@ function OverviewGrid({
       ? ((latest.swap_used_mb / latest.swap_total_mb) * 100).toFixed(1)
       : "—";
 
+  const windowToolbar = (
+    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+      <TimeWindowPicker active={timeWindow} onChange={onTimeWindowChange} />
+    </div>
+  );
+
   return (
     <div className="overview-layout">
 
       {/* ── Stat cards row ── */}
       <div className="stat-row">
 
-        {/* VRAM */}
         <StatCard label="VRAM Wired" accent={APPLE.blue}>
           {latest ? (
             <VramGauge wired_mb={latest.wired_mb} limit_mb={latest.limit_mb} />
@@ -422,7 +856,6 @@ function OverviewGrid({
           )}
         </StatCard>
 
-        {/* Thrash Danger Index */}
         <StatCard label="Thrash Danger Index" accent={tColor}>
           {latest ? (
             <ThrashMeter index={tIdx} />
@@ -431,9 +864,11 @@ function OverviewGrid({
           )}
         </StatCard>
 
-        {/* Swap Committed */}
         <StatCard label="Swap Committed" accent={APPLE.cyan}>
-          <div className="stat-value" style={{ color: APPLE.cyan, fontVariantNumeric: "tabular-nums" }}>
+          <div
+            className="stat-value"
+            style={{ color: APPLE.cyan, fontVariantNumeric: "tabular-nums" }}
+          >
             {latest ? `${fmtMB(Math.round(latest.swap_used_mb))} MB` : "—"}
           </div>
           <div className="stat-sub">
@@ -443,9 +878,11 @@ function OverviewGrid({
           </div>
         </StatCard>
 
-        {/* Cumulative Pageouts */}
         <StatCard label="Cumulative Pageouts" accent={APPLE.orange}>
-          <div className="stat-value" style={{ color: APPLE.orange, fontVariantNumeric: "tabular-nums" }}>
+          <div
+            className="stat-value"
+            style={{ color: APPLE.orange, fontVariantNumeric: "tabular-nums" }}
+          >
             {latest ? fmtMB(latest.pageouts) : "—"}
           </div>
           <div className="stat-sub">since boot</div>
@@ -455,17 +892,42 @@ function OverviewGrid({
 
       {/* ── 2×2 chart grid ── */}
       <div className="chart-grid">
-        <ChartCard title="VRAM Wired — MB">
-          <MiniChart data={history} dataKey="wired_mb"     color={APPLE.blue}   unit="MB" />
+        <ChartCard title="VRAM Wired — MB" toolbar={windowToolbar}>
+          <MiniChart
+            data={history}
+            dataKey="wired_mb"
+            color={APPLE.blue}
+            unit="MB"
+            spikeMarkers={spikes}
+          />
         </ChartCard>
         <ChartCard title="Swap Used — MB">
-          <MiniChart data={history} dataKey="swap_used_mb" color={APPLE.cyan}   unit="MB" />
+          <MiniChart
+            data={history}
+            dataKey="swap_used_mb"
+            color={APPLE.cyan}
+            unit="MB"
+            spikeMarkers={spikes}
+          />
         </ChartCard>
         <ChartCard title="Pageouts — cumulative">
-          <MiniChart data={history} dataKey="pageouts"     color={APPLE.orange} unit=""   />
+          <MiniChart
+            data={history}
+            dataKey="pageouts"
+            color={APPLE.orange}
+            unit=""
+            spikeMarkers={spikes}
+          />
         </ChartCard>
         <ChartCard title="Thrash Danger Index — 0–1">
-          <MiniChart data={history} dataKey="thrash_index" color={tColor}       unit=""   domain={[0, 1]} />
+          <MiniChart
+            data={history}
+            dataKey="thrash_index"
+            color={tColor}
+            unit=""
+            domain={[0, 1]}
+            spikeMarkers={spikes}
+          />
         </ChartCard>
       </div>
 
@@ -487,24 +949,35 @@ function FocusView({
   subFn,
   domain,
   gauge,
+  spikes,
+  timeWindow,
+  onTimeWindowChange,
 }: {
-  title:   string;
-  latest:  TelemetryFrame | null;
-  history: ChartPoint[];
-  dataKey: keyof ChartPoint;
-  color:   string;
-  unit:    string;
-  valueFn: (f: TelemetryFrame) => string;
-  subFn:   (f: TelemetryFrame) => string;
-  domain?: [number | string, number | string];
-  gauge?:  React.ReactNode;
+  title:               string;
+  latest:              TelemetryFrame | null;
+  history:             ChartPoint[];
+  dataKey:             keyof ChartPoint;
+  color:               string;
+  unit:                string;
+  valueFn:             (f: TelemetryFrame) => string;
+  subFn:               (f: TelemetryFrame) => string;
+  domain?:             [number | string, number | string];
+  gauge?:              React.ReactNode;
+  spikes?:             SpikeRecord[];
+  timeWindow?:         TimeWindow;
+  onTimeWindowChange?: (w: TimeWindow) => void;
 }) {
   return (
     <div className="focus-layout">
       <div className="stat-card focus-hero">
-        <span className="stat-label" style={{ color }}>{title}</span>
+        <span className="stat-label" style={{ color }}>
+          {title}
+        </span>
         <div className="stat-body">
-          <div className="stat-value" style={{ color, fontVariantNumeric: "tabular-nums" }}>
+          <div
+            className="stat-value"
+            style={{ color, fontVariantNumeric: "tabular-nums" }}
+          >
             {latest ? valueFn(latest) : "—"}
           </div>
           <div className="stat-sub">
@@ -513,13 +986,24 @@ function FocusView({
           {gauge && <div style={{ marginTop: 16 }}>{gauge}</div>}
         </div>
       </div>
-      <ChartCard title={`${title} — 60 s window`}>
+      <ChartCard
+        title={`${title} — ${timeWindow ?? "1m"} window`}
+        toolbar={
+          timeWindow && onTimeWindowChange ? (
+            <TimeWindowPicker
+              active={timeWindow}
+              onChange={onTimeWindowChange}
+            />
+          ) : undefined
+        }
+      >
         <MiniChart
           data={history}
           dataKey={dataKey}
           color={color}
           unit={unit}
           domain={domain}
+          spikeMarkers={spikes}
         />
       </ChartCard>
     </div>
@@ -527,18 +1011,102 @@ function FocusView({
 }
 
 /* ══════════════════════════════════════════════════════════════════════
+   CUSTOM HOOK — historical data fetcher
+══════════════════════════════════════════════════════════════════════ */
+function useHistoryData(window: TimeWindow) {
+  const [data, setData]       = useState<ChartPoint[]>([]);
+  const [loading, setLoading] = useState(false);
+  const timerRef              = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const fetch_ = useCallback(async () => {
+    if (window === "1m") return; // live stream handles this
+    setLoading(true);
+    try {
+      const res  = await fetch(`${API_BASE}/api/history?window=${window}`);
+      if (res.ok) {
+        const rows: Record<string, number>[] = await res.json();
+        setData(rows.map(historyRowToChartPoint));
+      }
+    } catch {
+      // network error — keep stale data
+    } finally {
+      setLoading(false);
+    }
+  }, [window]);
+
+  useEffect(() => {
+    if (window === "1m") {
+      setData([]);
+      return;
+    }
+    fetch_();
+    const interval = HISTORY_POLL_MS[window];
+    if (interval > 0) {
+      timerRef.current = setInterval(fetch_, interval);
+    }
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+    };
+  }, [window, fetch_]);
+
+  return { data, loading, refresh: fetch_ };
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   CUSTOM HOOK — spikes fetcher
+══════════════════════════════════════════════════════════════════════ */
+function useSpikes() {
+  const [spikes, setSpikes] = useState<SpikeRecord[]>([]);
+  const timerRef            = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const fetch_ = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/spikes`);
+      if (res.ok) {
+        const data: SpikeRecord[] = await res.json();
+        setSpikes(data);
+      }
+    } catch {
+      // silent
+    }
+  }, []);
+
+  useEffect(() => {
+    fetch_();
+    timerRef.current = setInterval(fetch_, 60_000); // refresh every minute
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+    };
+  }, [fetch_]);
+
+  return spikes;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
    MAIN DASHBOARD
 ══════════════════════════════════════════════════════════════════════ */
 export default function Home() {
-  const [history, setHistory] = useState<ChartPoint[]>([]);
-  const [latest,  setLatest]  = useState<TelemetryFrame | null>(null);
-  const [status,  setStatus]  = useState<ConnectionStatus>("connecting");
-  const [view,    setView]    = useState<ActiveView>("overview");
+  const [liveHistory, setLiveHistory] = useState<ChartPoint[]>([]);
+  const [latest,      setLatest]      = useState<TelemetryFrame | null>(null);
+  const [status,      setStatus]      = useState<ConnectionStatus>("connecting");
+  const [view,        setView]        = useState<ActiveView>("overview");
+  const [timeWindow,  setTimeWindow]  = useState<TimeWindow>("1m");
+
+  // Highlighted spike — used to scroll/focus a specific moment
+  const [highlightedSpike, setHighlightedSpike] = useState<SpikeRecord | null>(null);
 
   const wsRef         = useRef<WebSocket | null>(null);
   const retryRef      = useRef<ReturnType<typeof setTimeout> | null>(null);
   const retryDelayRef = useRef(BASE_RETRY_MS);
   const mountedRef    = useRef(true);
+
+  const { data: histData, loading: histLoading } = useHistoryData(timeWindow);
+  const spikes = useSpikes();
+
+  /* ── Decide which data set to show ── */
+  // In 1m mode, use the live buffer.
+  // In 5m / 1h mode, use the fetched historical data.
+  const displayHistory = timeWindow === "1m" ? liveHistory : histData;
 
   /* ── WebSocket with exponential back-off reconnect ── */
   const connect = useCallback(() => {
@@ -559,7 +1127,9 @@ export default function Home() {
       try {
         const frame: TelemetryFrame = JSON.parse(evt.data);
         setLatest(frame);
-        setHistory((prev) => {
+        // Always update the live buffer regardless of which window is shown,
+        // so switching back to 1m is instant.
+        setLiveHistory((prev) => {
           const next = [...prev, toChartPoint(frame)];
           return next.length > MAX_POINTS ? next.slice(-MAX_POINTS) : next;
         });
@@ -592,8 +1162,32 @@ export default function Home() {
     };
   }, [connect]);
 
+  /* ── When a spike is selected, switch to an appropriate window ── */
+  function handleSpikeSelect(s: SpikeRecord) {
+    setHighlightedSpike(s);
+    const age = Date.now() / 1000 - s.timestamp;
+    if (age <= 60) {
+      setTimeWindow("1m");
+    } else if (age <= 300) {
+      setTimeWindow("5m");
+    } else {
+      setTimeWindow("1h");
+    }
+  }
+
   const tIdx   = latest?.thrash_index ?? 0;
   const tColor = latest ? thrashColor(tIdx) : APPLE.label4;
+
+  // Merge spike highlight into the spikes list as an overlay marker
+  const spikeMarkers: SpikeRecord[] =
+    highlightedSpike && !spikes.find((s) => s.timestamp === highlightedSpike.timestamp)
+      ? [highlightedSpike, ...spikes]
+      : spikes;
+
+  /* ── Toolbar accessories shared across views ── */
+  const spikesBtn = (
+    <SpikesInspector spikes={spikes} onSelect={handleSpikeSelect} />
+  );
 
   /* ── Render ── */
   return (
@@ -622,7 +1216,6 @@ export default function Home() {
           <header className="mac-titlebar">
             <TrafficLights />
 
-            {/* Window title — centred absolutely */}
             <div className="window-title-center">
               <svg
                 width="14" height="14" viewBox="0 0 14 14"
@@ -634,28 +1227,41 @@ export default function Home() {
               <span className="window-title-text">Sentinel-AI</span>
             </div>
 
-            {/* Right: live status badge */}
             <div className="window-title-right">
               <StatusBadge status={status} />
             </div>
           </header>
 
-          {/* Unified toolbar — segmented control */}
-          <div className="unified-toolbar">
+          {/* Unified toolbar — view picker + spikes button */}
+          <div
+            className="unified-toolbar"
+            style={{
+              display:        "flex",
+              alignItems:     "center",
+              justifyContent: "space-between",
+            }}
+          >
             <SegmentedControl active={view} onChange={setView} />
+            {spikesBtn}
           </div>
 
           {/* Content */}
           <main className="window-content">
             {view === "overview" && (
-              <OverviewGrid latest={latest} history={history} />
+              <OverviewGrid
+                latest={latest}
+                history={displayHistory}
+                spikes={spikeMarkers}
+                timeWindow={timeWindow}
+                onTimeWindowChange={setTimeWindow}
+              />
             )}
 
             {view === "memory" && (
               <FocusView
                 title="VRAM Wired"
                 latest={latest}
-                history={history}
+                history={displayHistory}
                 dataKey="wired_mb"
                 color={APPLE.blue}
                 unit="MB"
@@ -673,6 +1279,9 @@ export default function Home() {
                     />
                   ) : undefined
                 }
+                spikes={spikeMarkers}
+                timeWindow={timeWindow}
+                onTimeWindowChange={setTimeWindow}
               />
             )}
 
@@ -680,7 +1289,7 @@ export default function Home() {
               <FocusView
                 title="Swap Committed"
                 latest={latest}
-                history={history}
+                history={displayHistory}
                 dataKey="swap_used_mb"
                 color={APPLE.cyan}
                 unit="MB"
@@ -690,6 +1299,9 @@ export default function Home() {
                     ? `${((f.swap_used_mb / f.swap_total_mb) * 100).toFixed(1)}% of ${fmtMB(Math.round(f.swap_total_mb))} MB`
                     : "—"
                 }
+                spikes={spikeMarkers}
+                timeWindow={timeWindow}
+                onTimeWindowChange={setTimeWindow}
               />
             )}
 
@@ -698,7 +1310,7 @@ export default function Home() {
                 <FocusView
                   title="Thrash Danger Index"
                   latest={latest}
-                  history={history}
+                  history={displayHistory}
                   dataKey="thrash_index"
                   color={tColor}
                   unit=""
@@ -706,16 +1318,20 @@ export default function Home() {
                   subFn={(f) => thrashLabel(f.thrash_index)}
                   domain={[0, 1]}
                   gauge={latest ? <ThrashMeter index={tIdx} /> : undefined}
+                  spikes={spikeMarkers}
+                  timeWindow={timeWindow}
+                  onTimeWindowChange={setTimeWindow}
                 />
                 <FocusView
                   title="Pageouts"
                   latest={latest}
-                  history={history}
+                  history={displayHistory}
                   dataKey="pageouts"
                   color={APPLE.orange}
                   unit=""
                   valueFn={(f) => fmtMB(f.pageouts)}
                   subFn={() => "cumulative since boot"}
+                  spikes={spikeMarkers}
                 />
               </div>
             )}
@@ -724,7 +1340,12 @@ export default function Home() {
 
         {/* Footer */}
         <footer className="page-footer">
-          Sentinel-AI · macOS sysctl &amp; vm_stat · {MAX_POINTS}s rolling window
+          Sentinel-AI · macOS sysctl &amp; vm_stat ·{" "}
+          {timeWindow === "1m"
+            ? `${MAX_POINTS}s rolling window`
+            : timeWindow === "5m"
+            ? "5 min history"
+            : "1 hour history"}
         </footer>
       </div>
     </div>
