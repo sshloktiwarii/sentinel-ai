@@ -1,9 +1,8 @@
 /**
  * web/src/pages/index.tsx
  *
- * Sentinel-AI — macOS HIG-styled telemetry dashboard
- * Connects to ws://127.0.0.1:8000/ws/telemetry and renders live charts
- * for VRAM (wired), swap usage, pageouts, and thrash index.
+ * Sentinel-AI — production-grade macOS HIG telemetry dashboard
+ * Authentic Liquid Glass materials, SF Pro typography, semantic state colours.
  */
 
 import { useEffect, useRef, useState, useCallback } from "react";
@@ -22,45 +21,52 @@ import {
 /* ── Font ─────────────────────────────────────────────────────────────── */
 const geistMono = Geist_Mono({
   variable: "--font-geist-mono",
-  subsets: ["latin"],
+  subsets:  ["latin"],
 });
 
-/* ── Apple system accent colors ───────────────────────────────────────── */
+/* ── Apple semantic palette ───────────────────────────────────────────── */
 const APPLE = {
-  blue:   "#0a84ff",
-  mint:   "#30d158",
-  orange: "#ff9f0a",
-  red:    "#ff453a",
-  cyan:   "#32ade6",
-  gray:   "rgba(235,235,245,0.3)",
+  blue:        "#0a84ff",
+  mint:        "#30d158",
+  orange:      "#ff9f0a",
+  red:         "#ff453a",
+  cyan:        "#32ade6",
+  indigo:      "#5e5ce6",
+  label:       "#f2f2f7",
+  label2:      "rgba(235,235,245,0.6)",
+  label3:      "rgba(235,235,245,0.3)",
+  label4:      "rgba(235,235,245,0.16)",
+  separator:   "rgba(255,255,255,0.08)",
+  fillTertiary:"rgba(118,118,128,0.18)",
 } as const;
 
 /* ── Types ────────────────────────────────────────────────────────────── */
 interface TelemetryFrame {
-  timestamp: number;
-  wired_mb: number;
-  limit_mb: number;
-  swap_total_mb: number;
+  timestamp:    number;
+  wired_mb:     number;
+  limit_mb:     number;
+  swap_total_mb:number;
   swap_used_mb: number;
-  pageouts: number;
+  pageouts:     number;
   thrash_index: number;
 }
 
 interface ChartPoint {
-  t: string;
-  wired_mb: number;
+  t:            string;
+  wired_mb:     number;
   swap_used_mb: number;
-  pageouts: number;
+  pageouts:     number;
   thrash_index: number;
 }
 
 type ConnectionStatus = "connecting" | "connected" | "reconnecting" | "error";
-type ActiveView = "overview" | "memory" | "swap" | "pressure";
+type ActiveView       = "overview"  | "memory"    | "swap"          | "pressure";
 
 const WS_URL        = "ws://127.0.0.1:8000/ws/telemetry";
 const MAX_POINTS    = 60;
 const BASE_RETRY_MS = 1_500;
 const MAX_RETRY_MS  = 30_000;
+const VRAM_BUDGET   = 18_432; // MB — M-series 18 GB unified memory
 
 /* ── Helpers ──────────────────────────────────────────────────────────── */
 function fmtTime(ts: number): string {
@@ -81,62 +87,69 @@ function toChartPoint(f: TelemetryFrame): ChartPoint {
   };
 }
 
-function thrashAccent(index: number): string {
-  if (index >= 0.75) return APPLE.red;
-  if (index >= 0.25) return APPLE.orange;
+/** Semantic thrash colour: Mint → Orange → Red */
+function thrashColor(index: number): string {
+  if (index >= 0.7) return APPLE.red;
+  if (index >= 0.3) return APPLE.orange;
   return APPLE.mint;
 }
 
 function thrashLabel(index: number): string {
-  if (index >= 0.75) return "Critical";
-  if (index >= 0.5)  return "Elevated";
-  if (index >= 0.25) return "Moderate";
+  if (index >= 0.7) return "Critical";
+  if (index >= 0.5) return "Elevated";
+  if (index >= 0.3) return "Moderate";
   return "Nominal";
 }
 
-/* ── Traffic lights ───────────────────────────────────────────────────── */
+/* ══════════════════════════════════════════════════════════════════════
+   TRAFFIC LIGHTS
+══════════════════════════════════════════════════════════════════════ */
 function TrafficLights() {
   return (
-    <div className="traffic-lights" aria-hidden>
-      <span className="traffic-light traffic-light-close"  title="Close" />
-      <span className="traffic-light traffic-light-min"    title="Minimise" />
-      <span className="traffic-light traffic-light-expand" title="Zoom" />
+    <div className="traffic-lights" aria-hidden="true">
+      <span className="tl tl-close"  title="Close"    />
+      <span className="tl tl-min"    title="Minimise" />
+      <span className="tl tl-zoom"   title="Zoom"     />
     </div>
   );
 }
 
-/* ── Status pill ──────────────────────────────────────────────────────── */
-function StatusPill({ status }: { status: ConnectionStatus }) {
-  const map: Record<ConnectionStatus, { color: string; label: string; pulse: boolean }> = {
-    connected:    { color: APPLE.mint,   label: "Live",           pulse: true  },
-    connecting:   { color: APPLE.blue,   label: "Connecting…",   pulse: false },
-    reconnecting: { color: APPLE.orange, label: "Reconnecting…", pulse: false },
-    error:        { color: APPLE.red,    label: "Disconnected",  pulse: false },
+/* ══════════════════════════════════════════════════════════════════════
+   STATUS BADGE  –  mint dot with radial glow when live
+══════════════════════════════════════════════════════════════════════ */
+function StatusBadge({ status }: { status: ConnectionStatus }) {
+  const cfg: Record<ConnectionStatus, { color: string; label: string; glow: boolean }> = {
+    connected:    { color: APPLE.mint,   label: "Live",           glow: true  },
+    connecting:   { color: APPLE.blue,   label: "Connecting…",   glow: false },
+    reconnecting: { color: APPLE.orange, label: "Reconnecting…", glow: false },
+    error:        { color: APPLE.red,    label: "Disconnected",  glow: false },
   };
-  const { color, label, pulse } = map[status];
+  const { color, label, glow } = cfg[status];
 
   return (
     <span
-      className="status-pill"
+      className="status-badge"
       style={{
-        backgroundColor: `${color}1a`,
-        borderColor:     `${color}40`,
+        background:   `${color}18`,
+        borderColor:  `${color}38`,
         color,
       }}
     >
       <span
-        className={clsx(
-          "inline-block h-[6px] w-[6px] rounded-full flex-shrink-0",
-          pulse && "animate-pulse"
-        )}
-        style={{ backgroundColor: color }}
+        className={clsx("status-dot", glow && "status-dot-live")}
+        style={{
+          background: color,
+          boxShadow: glow ? `0 0 6px 2px ${color}70` : "none",
+        }}
       />
       {label}
     </span>
   );
 }
 
-/* ── Segmented control ────────────────────────────────────────────────── */
+/* ══════════════════════════════════════════════════════════════════════
+   SEGMENTED CONTROL
+══════════════════════════════════════════════════════════════════════ */
 const VIEWS: { id: ActiveView; label: string }[] = [
   { id: "overview", label: "Overview" },
   { id: "memory",   label: "Memory"   },
@@ -148,79 +161,147 @@ function SegmentedControl({
   active,
   onChange,
 }: {
-  active: ActiveView;
+  active:   ActiveView;
   onChange: (v: ActiveView) => void;
 }) {
   return (
-    <div className="seg-control" role="tablist" aria-label="Dashboard view">
+    <nav className="seg-track" role="tablist" aria-label="Dashboard view">
       {VIEWS.map(({ id, label }) => (
         <button
           key={id}
           role="tab"
           aria-selected={active === id}
-          className={clsx("seg-btn", active === id && "seg-btn-active")}
+          className={clsx("seg-item", active === id && "seg-item--active")}
           onClick={() => onChange(id)}
         >
           {label}
         </button>
       ))}
+    </nav>
+  );
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   VRAM GAUGE  –  native progress bar + wired vs budget
+══════════════════════════════════════════════════════════════════════ */
+function VramGauge({
+  wired_mb,
+  limit_mb,
+}: {
+  wired_mb: number;
+  limit_mb: number;
+}) {
+  const budget   = limit_mb > 0 ? limit_mb : VRAM_BUDGET;
+  const pct      = Math.min((wired_mb / budget) * 100, 100);
+  const barColor =
+    pct >= 80 ? APPLE.red : pct >= 55 ? APPLE.orange : APPLE.blue;
+
+  return (
+    <div className="vram-gauge">
+      {/* Track */}
+      <div className="vram-track">
+        <div
+          className="vram-fill"
+          style={{
+            width:      `${pct}%`,
+            background: barColor,
+            boxShadow:  `0 0 8px 0 ${barColor}60`,
+          }}
+        />
+      </div>
+      {/* Labels */}
+      <div className="vram-labels">
+        <span style={{ color: barColor, fontVariantNumeric: "tabular-nums" }}>
+          {fmtMB(Math.round(wired_mb))} MB
+        </span>
+        <span style={{ color: APPLE.label3 }}>
+          {pct.toFixed(1)}% of {fmtMB(budget)} MB
+        </span>
+      </div>
     </div>
   );
 }
 
-/* ── Custom tooltip ───────────────────────────────────────────────────── */
+/* ══════════════════════════════════════════════════════════════════════
+   THRASH METER  –  segmented indicator bar
+══════════════════════════════════════════════════════════════════════ */
+function ThrashMeter({ index }: { index: number }) {
+  const color = thrashColor(index);
+  const pct   = Math.min(index * 100, 100);
+  const label = thrashLabel(index);
+
+  return (
+    <div className="thrash-meter">
+      <div className="vram-track">
+        <div
+          className="vram-fill"
+          style={{
+            width:      `${pct}%`,
+            background: color,
+            boxShadow:  `0 0 8px 0 ${color}60`,
+          }}
+        />
+      </div>
+      <div className="vram-labels">
+        <span style={{ color, fontVariantNumeric: "tabular-nums" }}>
+          {index.toFixed(3)}
+        </span>
+        <span style={{ color: APPLE.label3 }}>{label}</span>
+      </div>
+    </div>
+  );
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   STAT CARD  –  glass tile
+══════════════════════════════════════════════════════════════════════ */
+interface StatCardProps {
+  label:    string;
+  accent:   string;
+  children: React.ReactNode;
+}
+
+function StatCard({ label, accent, children }: StatCardProps) {
+  return (
+    <div className="stat-card">
+      <span className="stat-label" style={{ color: accent }}>
+        {label}
+      </span>
+      <div className="stat-body">{children}</div>
+    </div>
+  );
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   CHART TOOLTIP  –  native popover style
+══════════════════════════════════════════════════════════════════════ */
 function ChartTooltip({
   active,
   payload,
   label,
   unit,
 }: {
-  active?: boolean;
+  active?:  boolean;
   payload?: Array<{ value: number }>;
-  label?: string;
-  unit: string;
+  label?:   string;
+  unit:     string;
 }) {
   if (!active || !payload?.length) return null;
+
   return (
-    <div
-      style={{
-        background:     "rgba(28,28,30,0.95)",
-        border:         "1px solid rgba(255,255,255,0.1)",
-        borderRadius:   8,
-        padding:        "8px 12px",
-        fontSize:       12,
-        color:          "#f2f2f7",
-        backdropFilter: "blur(20px)",
-        boxShadow:      "0 4px 20px rgba(0,0,0,0.5)",
-      }}
-    >
-      <p style={{ color: "rgba(235,235,245,0.45)", marginBottom: 4 }}>{label}</p>
-      <p style={{ fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>
-        {payload[0].value.toLocaleString("en-US")}{unit ? ` ${unit}` : ""}
-      </p>
+    <div className="chart-tooltip">
+      <span className="chart-tooltip-time">{label}</span>
+      <span className="chart-tooltip-value" style={{ fontVariantNumeric: "tabular-nums" }}>
+        {payload[0].value.toLocaleString("en-US")}
+        {unit ? <span className="chart-tooltip-unit"> {unit}</span> : null}
+      </span>
     </div>
   );
 }
 
-/* ── Metric row ───────────────────────────────────────────────────────── */
-interface MetricRowProps {
-  label:  string;
-  value:  string;
-  sub?:   string;
-  accent: string;
-}
-
-function MetricRow({ label, value, sub, accent }: MetricRowProps) {
-  return (
-    <div className="flex flex-col gap-1 py-3">
-      <span className="metric-label">{label}</span>
-      <span className="metric-value" style={{ color: accent }}>{value}</span>
-      {sub && <span className="metric-sub">{sub}</span>}
-    </div>
-  );
-}
-
-/* ── Area chart ───────────────────────────────────────────────────────── */
+/* ══════════════════════════════════════════════════════════════════════
+   AREA CHART WRAPPER
+══════════════════════════════════════════════════════════════════════ */
 interface MiniChartProps {
   data:    ChartPoint[];
   dataKey: keyof ChartPoint;
@@ -230,35 +311,51 @@ interface MiniChartProps {
 }
 
 function MiniChart({ data, dataKey, color, unit, domain }: MiniChartProps) {
-  const gradId     = `grad-${dataKey}`;
-  const axisStyle  = { fill: "rgba(235,235,245,0.3)", fontSize: 10 };
-  const gridStroke = "rgba(255,255,255,0.05)";
+  const gradId    = `grad-${String(dataKey)}`;
+  const axisColor = APPLE.label4;
+  const gridColor = "rgba(255,255,255,0.04)";
 
   return (
-    <ResponsiveContainer width="100%" height={160}>
-      <AreaChart data={data} margin={{ top: 6, right: 4, bottom: 0, left: -8 }}>
+    <ResponsiveContainer width="100%" height={168}>
+      <AreaChart data={data} margin={{ top: 8, right: 2, bottom: 0, left: -10 }}>
         <defs>
           <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
-            <stop offset="5%"  stopColor={color} stopOpacity={0.35} />
-            <stop offset="95%" stopColor={color} stopOpacity={0}    />
+            <stop offset="0%"   stopColor={color} stopOpacity={0.4} />
+            <stop offset="100%" stopColor={color} stopOpacity={0}   />
           </linearGradient>
         </defs>
-        <CartesianGrid stroke={gridStroke} vertical={false} />
+
+        <CartesianGrid
+          stroke={gridColor}
+          vertical={false}
+          strokeDasharray="0"
+        />
+
         <XAxis
           dataKey="t"
-          tick={axisStyle}
+          tick={{ fill: APPLE.label3, fontSize: 10, fontFamily: "-apple-system" }}
           tickLine={false}
           axisLine={false}
           interval="preserveStartEnd"
+          style={{ userSelect: "none" }}
         />
         <YAxis
-          tick={axisStyle}
+          tick={{ fill: APPLE.label3, fontSize: 10, fontFamily: "-apple-system", dx: -2 }}
           tickLine={false}
           axisLine={false}
-          width={44}
+          width={46}
           domain={domain}
+          tickFormatter={(v: number) =>
+            v >= 1000 ? `${(v / 1000).toFixed(0)}k` : String(v)
+          }
+          style={{ userSelect: "none" }}
         />
-        <Tooltip content={<ChartTooltip unit={unit} />} />
+
+        <Tooltip
+          content={<ChartTooltip unit={unit} />}
+          cursor={{ stroke: axisColor, strokeWidth: 1 }}
+        />
+
         <Area
           type="monotone"
           dataKey={dataKey}
@@ -266,6 +363,7 @@ function MiniChart({ data, dataKey, color, unit, domain }: MiniChartProps) {
           strokeWidth={1.5}
           fill={`url(#${gradId})`}
           dot={false}
+          activeDot={{ r: 3, fill: color, strokeWidth: 0 }}
           isAnimationActive={false}
         />
       </AreaChart>
@@ -273,8 +371,10 @@ function MiniChart({ data, dataKey, color, unit, domain }: MiniChartProps) {
   );
 }
 
-/* ── Full-width chart card ────────────────────────────────────────────── */
-function FullChartCard({
+/* ══════════════════════════════════════════════════════════════════════
+   CHART CARD
+══════════════════════════════════════════════════════════════════════ */
+function ChartCard({
   title,
   children,
 }: {
@@ -282,25 +382,16 @@ function FullChartCard({
   children: React.ReactNode;
 }) {
   return (
-    <div className="mac-card p-5">
-      <p
-        style={{
-          fontSize:      12,
-          fontWeight:    600,
-          color:         "rgba(235,235,245,0.5)",
-          letterSpacing: "0.05em",
-          textTransform: "uppercase",
-          marginBottom:  12,
-        }}
-      >
-        {title}
-      </p>
+    <div className="chart-card">
+      <p className="chart-card-title">{title}</p>
       {children}
     </div>
   );
 }
 
-/* ── Overview grid ────────────────────────────────────────────────────── */
+/* ══════════════════════════════════════════════════════════════════════
+   OVERVIEW GRID
+══════════════════════════════════════════════════════════════════════ */
 function OverviewGrid({
   latest,
   history,
@@ -309,81 +400,82 @@ function OverviewGrid({
   history: ChartPoint[];
 }) {
   const tIdx   = latest?.thrash_index ?? 0;
-  const tColor = latest ? thrashAccent(tIdx) : APPLE.gray;
+  const tColor = latest ? thrashColor(tIdx) : APPLE.label4;
 
-  const vramPct = latest && latest.limit_mb > 0
-    ? ((latest.wired_mb / latest.limit_mb) * 100).toFixed(1)
-    : "—";
-  const swapPct = latest && latest.swap_total_mb > 0
-    ? ((latest.swap_used_mb / latest.swap_total_mb) * 100).toFixed(1)
-    : "—";
-
-  const stats = [
-    {
-      label:  "VRAM Wired",
-      value:  latest ? `${fmtMB(Math.round(latest.wired_mb))} MB` : "—",
-      sub:    latest ? `${vramPct}% of ${fmtMB(latest.limit_mb)} MB` : "Loading…",
-      accent: APPLE.blue,
-    },
-    {
-      label:  "Swap Used",
-      value:  latest ? `${fmtMB(Math.round(latest.swap_used_mb))} MB` : "—",
-      sub:    latest ? `${swapPct}% of ${fmtMB(Math.round(latest.swap_total_mb))} MB` : "Loading…",
-      accent: APPLE.cyan,
-    },
-    {
-      label:  "Pageouts",
-      value:  latest ? fmtMB(latest.pageouts) : "—",
-      sub:    "cumulative since boot",
-      accent: APPLE.orange,
-    },
-    {
-      label:  "Thrash Index",
-      value:  latest ? tIdx.toFixed(3) : "—",
-      sub:    latest ? thrashLabel(tIdx) : "—",
-      accent: tColor,
-    },
-  ];
+  const swapPct =
+    latest && latest.swap_total_mb > 0
+      ? ((latest.swap_used_mb / latest.swap_total_mb) * 100).toFixed(1)
+      : "—";
 
   return (
-    <div className="flex flex-col gap-4">
-      {/* Stat strip */}
-      <div className="mac-card grid grid-cols-2 sm:grid-cols-4">
-        {stats.map(({ label, value, sub, accent }, i) => (
-          <div
-            key={label}
-            className="px-5"
-            style={{
-              borderRight: i < stats.length - 1
-                ? "1px solid rgba(255,255,255,0.06)"
-                : undefined,
-            }}
-          >
-            <MetricRow label={label} value={value} sub={sub} accent={accent} />
+    <div className="overview-layout">
+
+      {/* ── Stat cards row ── */}
+      <div className="stat-row">
+
+        {/* VRAM */}
+        <StatCard label="VRAM Wired" accent={APPLE.blue}>
+          {latest ? (
+            <VramGauge wired_mb={latest.wired_mb} limit_mb={latest.limit_mb} />
+          ) : (
+            <span className="stat-placeholder">Loading…</span>
+          )}
+        </StatCard>
+
+        {/* Thrash Danger Index */}
+        <StatCard label="Thrash Danger Index" accent={tColor}>
+          {latest ? (
+            <ThrashMeter index={tIdx} />
+          ) : (
+            <span className="stat-placeholder">Loading…</span>
+          )}
+        </StatCard>
+
+        {/* Swap Committed */}
+        <StatCard label="Swap Committed" accent={APPLE.cyan}>
+          <div className="stat-value" style={{ color: APPLE.cyan, fontVariantNumeric: "tabular-nums" }}>
+            {latest ? `${fmtMB(Math.round(latest.swap_used_mb))} MB` : "—"}
           </div>
-        ))}
+          <div className="stat-sub">
+            {latest
+              ? `${swapPct}% of ${fmtMB(Math.round(latest.swap_total_mb))} MB`
+              : "Loading…"}
+          </div>
+        </StatCard>
+
+        {/* Cumulative Pageouts */}
+        <StatCard label="Cumulative Pageouts" accent={APPLE.orange}>
+          <div className="stat-value" style={{ color: APPLE.orange, fontVariantNumeric: "tabular-nums" }}>
+            {latest ? fmtMB(latest.pageouts) : "—"}
+          </div>
+          <div className="stat-sub">since boot</div>
+        </StatCard>
+
       </div>
 
-      {/* 2 × 2 chart grid */}
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-        <FullChartCard title="VRAM Wired (MB)">
+      {/* ── 2×2 chart grid ── */}
+      <div className="chart-grid">
+        <ChartCard title="VRAM Wired — MB">
           <MiniChart data={history} dataKey="wired_mb"     color={APPLE.blue}   unit="MB" />
-        </FullChartCard>
-        <FullChartCard title="Swap Used (MB)">
+        </ChartCard>
+        <ChartCard title="Swap Used — MB">
           <MiniChart data={history} dataKey="swap_used_mb" color={APPLE.cyan}   unit="MB" />
-        </FullChartCard>
-        <FullChartCard title="Pageouts">
+        </ChartCard>
+        <ChartCard title="Pageouts — cumulative">
           <MiniChart data={history} dataKey="pageouts"     color={APPLE.orange} unit=""   />
-        </FullChartCard>
-        <FullChartCard title="Thrash Danger Index">
-          <MiniChart data={history} dataKey="thrash_index" color={tColor} unit="" domain={[0, 1]} />
-        </FullChartCard>
+        </ChartCard>
+        <ChartCard title="Thrash Danger Index — 0–1">
+          <MiniChart data={history} dataKey="thrash_index" color={tColor}       unit=""   domain={[0, 1]} />
+        </ChartCard>
       </div>
+
     </div>
   );
 }
 
-/* ── Focused single-metric view ───────────────────────────────────────── */
+/* ══════════════════════════════════════════════════════════════════════
+   FOCUSED SINGLE-METRIC VIEW
+══════════════════════════════════════════════════════════════════════ */
 function FocusView({
   title,
   latest,
@@ -394,6 +486,7 @@ function FocusView({
   valueFn,
   subFn,
   domain,
+  gauge,
 }: {
   title:   string;
   latest:  TelemetryFrame | null;
@@ -404,18 +497,23 @@ function FocusView({
   valueFn: (f: TelemetryFrame) => string;
   subFn:   (f: TelemetryFrame) => string;
   domain?: [number | string, number | string];
+  gauge?:  React.ReactNode;
 }) {
   return (
-    <div className="flex flex-col gap-4">
-      <div className="mac-card px-6 py-2">
-        <MetricRow
-          label={title}
-          value={latest ? valueFn(latest) : "—"}
-          sub={latest ? subFn(latest) : "Loading…"}
-          accent={color}
-        />
+    <div className="focus-layout">
+      <div className="stat-card focus-hero">
+        <span className="stat-label" style={{ color }}>{title}</span>
+        <div className="stat-body">
+          <div className="stat-value" style={{ color, fontVariantNumeric: "tabular-nums" }}>
+            {latest ? valueFn(latest) : "—"}
+          </div>
+          <div className="stat-sub">
+            {latest ? subFn(latest) : "Loading…"}
+          </div>
+          {gauge && <div style={{ marginTop: 16 }}>{gauge}</div>}
+        </div>
       </div>
-      <FullChartCard title={`${title} — 60s window`}>
+      <ChartCard title={`${title} — 60 s window`}>
         <MiniChart
           data={history}
           dataKey={dataKey}
@@ -423,12 +521,14 @@ function FocusView({
           unit={unit}
           domain={domain}
         />
-      </FullChartCard>
+      </ChartCard>
     </div>
   );
 }
 
-/* ── Main dashboard ───────────────────────────────────────────────────── */
+/* ══════════════════════════════════════════════════════════════════════
+   MAIN DASHBOARD
+══════════════════════════════════════════════════════════════════════ */
 export default function Home() {
   const [history, setHistory] = useState<ChartPoint[]>([]);
   const [latest,  setLatest]  = useState<TelemetryFrame | null>(null);
@@ -440,6 +540,7 @@ export default function Home() {
   const retryDelayRef = useRef(BASE_RETRY_MS);
   const mountedRef    = useRef(true);
 
+  /* ── WebSocket with exponential back-off reconnect ── */
   const connect = useCallback(() => {
     if (!mountedRef.current) return;
     setStatus((s) => (s === "connected" ? "reconnecting" : s));
@@ -492,121 +593,60 @@ export default function Home() {
   }, [connect]);
 
   const tIdx   = latest?.thrash_index ?? 0;
-  const tColor = latest ? thrashAccent(tIdx) : APPLE.gray;
+  const tColor = latest ? thrashColor(tIdx) : APPLE.label4;
 
+  /* ── Render ── */
   return (
     <div
       className={geistMono.variable}
       style={{
-        minHeight:  "100vh",
-        background: "#121214",
-        fontFamily: "-apple-system, 'SF Pro Display', 'Helvetica Neue', sans-serif",
+        minHeight:  "100dvh",
+        background: "#0d0d0f",
+        fontFamily: `-apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display",
+                     "Helvetica Neue", Arial, sans-serif`,
       }}
     >
-      {/* Ambient background glows */}
-      <div
-        aria-hidden
-        style={{
-          position:      "fixed",
-          inset:         0,
-          overflow:      "hidden",
-          pointerEvents: "none",
-          zIndex:        0,
-        }}
-      >
-        <div
-          style={{
-            position:     "absolute",
-            top:          -160,
-            left:         -160,
-            width:        480,
-            height:       480,
-            borderRadius: "50%",
-            background:   "radial-gradient(circle, rgba(10,132,255,0.12) 0%, transparent 70%)",
-            filter:       "blur(40px)",
-          }}
-        />
-        <div
-          style={{
-            position:     "absolute",
-            bottom:       -120,
-            right:        -120,
-            width:        400,
-            height:       400,
-            borderRadius: "50%",
-            background:   "radial-gradient(circle, rgba(48,209,88,0.08) 0%, transparent 70%)",
-            filter:       "blur(40px)",
-          }}
-        />
+      {/* ── Ambient background glows ── */}
+      <div aria-hidden="true" className="ambient-layer">
+        <div className="glow glow-blue"  />
+        <div className="glow glow-green" />
       </div>
 
-      {/* Page layout */}
-      <div
-        style={{
-          position: "relative",
-          zIndex:   1,
-          maxWidth: 1080,
-          margin:   "0 auto",
-          padding:  "32px 24px 48px",
-        }}
-      >
-        {/* macOS window */}
+      {/* ── Page wrapper ── */}
+      <div className="page-wrapper">
+
+        {/* ── macOS window frame ── */}
         <div className="mac-window">
 
           {/* Title bar */}
-          <div className="mac-titlebar">
+          <header className="mac-titlebar">
             <TrafficLights />
 
-            {/* Centred title */}
-            <div
-              style={{
-                position:   "absolute",
-                left:       "50%",
-                transform:  "translateX(-50%)",
-                display:    "flex",
-                alignItems: "center",
-                gap:        8,
-              }}
-            >
-              <svg width="15" height="15" viewBox="0 0 15 15" fill="none" aria-hidden>
-                <circle cx="7.5" cy="7.5" r="7"   stroke={APPLE.blue} strokeWidth="1.2" />
-                <circle cx="7.5" cy="7.5" r="3.5" fill={APPLE.blue}   fillOpacity={0.6} />
-              </svg>
-              <span
-                style={{
-                  fontSize:      13,
-                  fontWeight:    600,
-                  color:         "rgba(235,235,245,0.85)",
-                  letterSpacing: "-0.01em",
-                  userSelect:    "none",
-                }}
+            {/* Window title — centred absolutely */}
+            <div className="window-title-center">
+              <svg
+                width="14" height="14" viewBox="0 0 14 14"
+                fill="none" aria-hidden="true"
               >
-                Sentinel-AI
-              </span>
+                <circle cx="7" cy="7" r="6.25" stroke={APPLE.blue} strokeWidth="1.5" />
+                <circle cx="7" cy="7" r="3"    fill={APPLE.blue}   fillOpacity={0.7} />
+              </svg>
+              <span className="window-title-text">Sentinel-AI</span>
             </div>
 
-            {/* Right: status pill */}
-            <div style={{ marginLeft: "auto" }}>
-              <StatusPill status={status} />
+            {/* Right: live status badge */}
+            <div className="window-title-right">
+              <StatusBadge status={status} />
             </div>
-          </div>
+          </header>
 
-          {/* Sub-toolbar: segmented control */}
-          <div
-            style={{
-              display:        "flex",
-              alignItems:     "center",
-              justifyContent: "center",
-              padding:        "10px 16px",
-              borderBottom:   "1px solid rgba(255,255,255,0.06)",
-              background:     "rgba(28,28,30,0.6)",
-            }}
-          >
+          {/* Unified toolbar — segmented control */}
+          <div className="unified-toolbar">
             <SegmentedControl active={view} onChange={setView} />
           </div>
 
-          {/* Content area */}
-          <div style={{ padding: "20px 20px 24px" }}>
+          {/* Content */}
+          <main className="window-content">
             {view === "overview" && (
               <OverviewGrid latest={latest} history={history} />
             )}
@@ -622,15 +662,23 @@ export default function Home() {
                 valueFn={(f) => `${fmtMB(Math.round(f.wired_mb))} MB`}
                 subFn={(f) =>
                   f.limit_mb > 0
-                    ? `${((f.wired_mb / f.limit_mb) * 100).toFixed(1)}% of ${fmtMB(f.limit_mb)} MB limit`
+                    ? `${((f.wired_mb / f.limit_mb) * 100).toFixed(1)}% of ${fmtMB(f.limit_mb)} MB budget`
                     : "—"
+                }
+                gauge={
+                  latest ? (
+                    <VramGauge
+                      wired_mb={latest.wired_mb}
+                      limit_mb={latest.limit_mb}
+                    />
+                  ) : undefined
                 }
               />
             )}
 
             {view === "swap" && (
               <FocusView
-                title="Swap Used"
+                title="Swap Committed"
                 latest={latest}
                 history={history}
                 dataKey="swap_used_mb"
@@ -646,9 +694,9 @@ export default function Home() {
             )}
 
             {view === "pressure" && (
-              <div className="flex flex-col gap-4">
+              <div className="focus-layout">
                 <FocusView
-                  title="Thrash Index"
+                  title="Thrash Danger Index"
                   latest={latest}
                   history={history}
                   dataKey="thrash_index"
@@ -657,6 +705,7 @@ export default function Home() {
                   valueFn={(f) => f.thrash_index.toFixed(3)}
                   subFn={(f) => thrashLabel(f.thrash_index)}
                   domain={[0, 1]}
+                  gauge={latest ? <ThrashMeter index={tIdx} /> : undefined}
                 />
                 <FocusView
                   title="Pageouts"
@@ -670,21 +719,13 @@ export default function Home() {
                 />
               </div>
             )}
-          </div>
+          </main>
         </div>
 
         {/* Footer */}
-        <p
-          style={{
-            marginTop:  20,
-            textAlign:  "center",
-            fontSize:   11,
-            color:      "rgba(235,235,245,0.2)",
-            userSelect: "none",
-          }}
-        >
+        <footer className="page-footer">
           Sentinel-AI · macOS sysctl &amp; vm_stat · {MAX_POINTS}s rolling window
-        </p>
+        </footer>
       </div>
     </div>
   );
