@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Platform: macOS Apple Silicon](https://img.shields.io/badge/Platform-macOS%20Apple%20Silicon-black.svg)]()
 [![Python: 3.10+](https://img.shields.io/badge/Python-3.10%2B-brightgreen.svg)]()
-[![Release: v1.0.0](https://img.shields.io/badge/Release-v1.0.0-emerald.svg)]()
+[![Release: v1.0.1](https://img.shields.io/badge/Release-v1.0.1-emerald.svg)]()
 
 Sentinel-AI is a native systems monitoring suite and tripwire engine designed specifically for Apple Silicon (M1/M2/M3/M4) local AI engineers. It continuously guards unified memory against catastrophic SSD swap death spirals during heavy local LLM inference (Ollama, LM Studio, vLLM, MLX) while monitoring AI agent token burn rates (TPS, TPM, RPM) across local proxy multiplexers like OmniRoute.
 

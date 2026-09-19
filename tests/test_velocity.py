@@ -246,3 +246,34 @@ class TestMenubarRunawayBadge:
         assert "⚠️ [RUNAWAY]" in app_instance.title
         assert "⚠️ RUNAWAY" in app_instance.item_velocity.title
         assert "220.5 TPS" in app_instance.item_velocity.title
+
+
+class TestHardenedNotificationDispatch:
+    """Verify security hardening for AppleScript notification dispatching."""
+
+    def test_notification_sanitization_and_subprocess_args(self):
+        tracker = TokenVelocityTracker()
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value.returncode = 0
+            tracker.dispatch_notification(
+                message='Malicious "string" with \\ backslash',
+                title='Alert "Title" \\',
+                subtitle='Sub "Title" \\',
+            )
+            mock_run.assert_called_once()
+            args, kwargs = mock_run.call_args
+            cmd = args[0]
+            assert cmd[0] == "osascript"
+            assert cmd[1] == "-e"
+            script = cmd[2]
+            assert kwargs.get("shell") is False
+            assert kwargs.get("timeout") == 5
+            assert r'\"string\"' in script
+            assert r'\\ backslash' in script
+            assert r'\"Title\"' in script
+
+    def test_notification_exception_handling_never_crashes(self):
+        tracker = TokenVelocityTracker()
+        with patch("subprocess.run", side_effect=RuntimeError("Subprocess execution failed")):
+            # Should catch silently without raising
+            tracker.dispatch_notification("Test message", "Test title")

@@ -185,3 +185,46 @@ class TestStaticFrontend:
             content_type = response.headers.get("content-type", "")
             assert "text/html" in content_type
             assert "<!doctype html>" in response.text.lower() or "<html" in response.text.lower()
+
+
+# ---------------------------------------------------------------------------
+# Security hardening tests
+# ---------------------------------------------------------------------------
+
+class TestHardenedServerSecurity:
+    """Verify server security hardening: restricted CORS and loopback binding."""
+
+    def test_cors_restricted_origins(self):
+        from starlette.middleware.cors import CORSMiddleware
+        cors_middlewares = [
+            m for m in app.user_middleware if m.cls == CORSMiddleware
+        ]
+        assert len(cors_middlewares) == 1
+        allow_origins = cors_middlewares[0].kwargs.get("allow_origins", [])
+        expected_origins = [
+            "http://localhost:8000",
+            "http://127.0.0.1:8000",
+            "http://localhost:3000",
+        ]
+        assert allow_origins == expected_origins
+        assert "*" not in allow_origins
+        assert ["*"] != allow_origins
+
+        # Verify CORS enforcement via TestClient
+        with TestClient(app) as client:
+            # Allowed origin
+            resp_allowed = client.get("/api/config", headers={"Origin": "http://localhost:8000"})
+            assert resp_allowed.headers.get("access-control-allow-origin") == "http://localhost:8000"
+
+            # Disallowed origin
+            resp_denied = client.get("/api/config", headers={"Origin": "http://evil.com"})
+            assert "access-control-allow-origin" not in resp_denied.headers
+
+    def test_start_enforces_loopback_binding(self):
+        import argparse
+        from sentinel.server import start
+
+        with patch("argparse.ArgumentParser.parse_args", return_value=argparse.Namespace(host="0.0.0.0", port=8000, reload=False)):
+            with patch("uvicorn.run") as mock_uvicorn:
+                start()
+                mock_uvicorn.assert_called_once_with("sentinel.server:app", host="127.0.0.1", port=8000, reload=False)

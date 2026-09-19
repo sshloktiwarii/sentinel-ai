@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sentinel-ai"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
     "fastapi>=0.115.12",
     "httpx>=0.28.1",

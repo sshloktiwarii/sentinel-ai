@@ -37,10 +37,14 @@ from sentinel.quota import get_all_quotas, get_velocity_metrics
 
 app = FastAPI(title="Sentinel-AI")
 
-# Allow the Next.js dev server (port 3000) and production builds to call the API.
+# Restrict CORS strictly to local loopback origins; wildcard ["*"] is explicitly forbidden.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origins=[
+        "http://localhost:8000",
+        "http://127.0.0.1:8000",
+        "http://localhost:3000",
+    ],
     allow_methods=["GET"],
     allow_headers=["*"],
 )
@@ -223,8 +227,8 @@ def start() -> None:
     parser = argparse.ArgumentParser(description="Sentinel-AI Telemetry & Quota Server")
     parser.add_argument(
         "--host",
-        default=os.environ.get("SENTINEL_HOST", "127.0.0.1"),
-        help="Host address to bind (default: 127.0.0.1)",
+        default="127.0.0.1",
+        help="Host address to bind (strictly loopback, default: 127.0.0.1)",
     )
     parser.add_argument(
         "--port",
@@ -239,7 +243,12 @@ def start() -> None:
     )
     args = parser.parse_args()
 
-    uvicorn.run("sentinel.server:app", host=args.host, port=args.port, reload=args.reload)
+    # Enforce loopback binding strictly to 127.0.0.1; never 0.0.0.0
+    bind_host = args.host
+    if bind_host in ("0.0.0.0", "::", "", "all"):
+        bind_host = "127.0.0.1"
+
+    uvicorn.run("sentinel.server:app", host=bind_host, port=args.port, reload=args.reload)
 
 
 if __name__ == "__main__":

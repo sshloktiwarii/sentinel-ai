@@ -171,12 +171,11 @@ class SentinelMenuBarApp(rumps.App):
 
     def dispatch_notification(self, message: str, title: str = "Sentinel-AI Alert") -> None:
         """Send a native macOS notification banner via AppleScript osascript."""
-        # Escape double quotes
-        safe_msg = message.replace('"', '\\"')
-        safe_title = title.replace('"', '\\"')
+        safe_msg = message.replace('\\', '\\\\').replace('"', '\\"')
+        safe_title = title.replace('\\', '\\\\').replace('"', '\\"')
         script = f'display notification "{safe_msg}" with title "{safe_title}"'
         try:
-            subprocess.run(["osascript", "-e", script], check=False, capture_output=True)
+            subprocess.run(["osascript", "-e", script], shell=False, check=False, capture_output=True, timeout=5)
         except Exception:
             pass
 

@@ -384,7 +384,7 @@ export default function Home() {
                   Sentinel-AI
                 </span>
                 <span className="font-mono text-[10px] px-1.5 py-0.5 rounded-full bg-zinc-800/90 text-zinc-400 border border-zinc-700/60">
-                  v1.0.0
+                  v1.0.1
                 </span>
               </div>
               <p className="text-[11px] text-zinc-500">
@@ -1214,7 +1214,7 @@ export default function Home() {
            FOOTER
         ══════════════════════════════════════════════════════════════════ */}
         <footer className="text-center py-4 text-[11px] font-mono text-zinc-600 space-y-1">
-          <div>Sentinel-AI v1.0.0 • Darwin Mach Microkernel Bindings • Native launchd daemon</div>
+          <div>Sentinel-AI v1.0.1 • Darwin Mach Microkernel Bindings • Native launchd daemon</div>
           <div className="text-zinc-700">Embedded Static Web Canvas (Zero Node.js Runtime Required)</div>
         </footer>
 

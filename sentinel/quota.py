@@ -32,6 +32,7 @@ import asyncio
 import collections
 import datetime
 import json
+import logging
 import math
 import os
 import re
@@ -45,6 +46,8 @@ from typing import Literal
 import httpx
 
 from sentinel.config import get_config
+
+logger = logging.getLogger("sentinel.quota")
 
 # ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -233,15 +236,31 @@ class TokenVelocityTracker:
         self,
         message: str = 'Agent runaway loop suspected (>150 TPS). Check active sessions.',
         title: str = "Sentinel-AI Alert",
+        subtitle: str = "",
     ) -> None:
         """Send native macOS notification banner via AppleScript osascript."""
-        safe_msg = message.replace('"', '\\"')
-        safe_title = title.replace('"', '\\"')
-        script = f'display notification "{safe_msg}" with title "{safe_title}"'
+        def _escape(s: str) -> str:
+            return str(s).replace('\\', '\\\\').replace('"', '\\"')
+
+        safe_msg = _escape(message)
+        safe_title = _escape(title)
+        safe_subtitle = _escape(subtitle)
+
+        if safe_subtitle:
+            script = f'display notification "{safe_msg}" with title "{safe_title}" subtitle "{safe_subtitle}"'
+        else:
+            script = f'display notification "{safe_msg}" with title "{safe_title}"'
+
         try:
-            subprocess.run(["osascript", "-e", script], check=False, capture_output=True)
-        except Exception:
-            pass
+            subprocess.run(
+                ["osascript", "-e", script],
+                shell=False,
+                check=False,
+                capture_output=True,
+                timeout=5,
+            )
+        except Exception as e:
+            logger.warning("Failed to dispatch macOS notification: %s", e)
 
     def get_metrics(self, now: float | None = None) -> dict:
         """Compute rolling token velocity and runaway loop detection status."""
