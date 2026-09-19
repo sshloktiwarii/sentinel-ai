@@ -1,1905 +1,1335 @@
 /**
  * web/src/pages/index.tsx
  *
- * Sentinel-AI — production-grade macOS HIG telemetry dashboard
- * Authentic Liquid Glass materials, SF Pro typography, semantic state colours.
+ * Sentinel-AI — High-Density Telemetry & Agent Quota Canvas
+ * Linear / Raycast inspired design language with deep zinc palette (#09090b),
+ * real-time SVG radial gauges, 60s sliding ring buffer sparklines, and zero-flicker tabular numerals.
  */
 
-import {
+import React, {
   useEffect,
   useRef,
   useState,
   useCallback,
+  useMemo,
 } from "react";
-import { Geist_Mono } from "next/font/google";
-import { clsx } from "clsx";
+import Head from "next/head";
 import {
-  ResponsiveContainer,
-  AreaChart,
-  Area,
-  XAxis,
-  YAxis,
-  Tooltip,
-  CartesianGrid,
-  ReferenceLine,
-} from "recharts";
+  Activity,
+  Cpu,
+  Zap,
+  HardDrive,
+  Shield,
+  ShieldAlert,
+  Play,
+  Pause,
+  RotateCw,
+  Info,
+  Clock,
+  Layers,
+  AlertTriangle,
+  Server,
+  ArrowUpRight,
+  CheckCircle2,
+  Sliders,
+  ExternalLink,
+} from "lucide-react";
 
-/* ── Font ─────────────────────────────────────────────────────────────── */
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
-});
-
-/* ── Apple semantic palette ───────────────────────────────────────────── */
-const APPLE = {
-  blue:         "#0a84ff",
-  mint:         "#30d158",
-  orange:       "#ff9f0a",
-  red:          "#ff453a",
-  cyan:         "#32ade6",
-  indigo:       "#5e5ce6",
-  label:        "#f2f2f7",
-  label2:       "rgba(235,235,245,0.6)",
-  label3:       "rgba(235,235,245,0.3)",
-  label4:       "rgba(235,235,245,0.16)",
-  separator:    "rgba(255,255,255,0.08)",
-  fillTertiary: "rgba(118,118,128,0.18)",
-} as const;
+/* ── Constants & Endpoints ────────────────────────────────────────────── */
+const API_BASE = "http://127.0.0.1:8000";
+const WS_URL   = "ws://127.0.0.1:8000/ws/telemetry";
+const MAX_LIVE_POINTS = 60;
+const BASE_RETRY_MS   = 1000;
+const MAX_RETRY_MS    = 16000;
 
 /* ── Types ────────────────────────────────────────────────────────────── */
+type ConnectionStatus = "connected" | "reconnecting" | "disconnected";
+type TimeWindow = "1m" | "5m" | "1h";
+type DashboardTab = "telemetry" | "quotas" | "engines" | "spikes" | "config";
+
 interface VelocityMetrics {
-  tps:              number;
-  tpm:              number;
-  rpm:              number;
+  tps: number;
+  tpm: number;
+  rpm: number;
   burn_rate_status: "nominal" | "elevated" | "runaway";
   runaway_detected: boolean;
-  reason?:          string;
+  reason?: string;
 }
 
 interface TelemetryFrame {
-  timestamp:        number;
-  wired_mb:         number;
-  limit_mb:         number;
-  swap_total_mb:    number;
-  swap_used_mb:     number;
-  pageouts:         number;
-  thrash_index:     number;
-  engine_active?:   boolean;
-  kv_cache_mb?:     number;
+  timestamp: number;
+  wired_mb: number;
+  limit_mb: number;
+  swap_total_mb: number;
+  swap_used_mb: number;
+  pageouts: number;
+  thrash_index: number;
+  engine_active?: boolean;
+  kv_cache_mb?: number;
   kv_pressure_pct?: number;
-  velocity?:        VelocityMetrics;
+  velocity?: VelocityMetrics;
+  is_apple_silicon?: boolean;
 }
 
 interface ChartPoint {
-  t:            string;
-  ts:           number;
-  wired_mb:     number;
+  t: string;
+  ts: number;
+  wired_mb: number;
   swap_used_mb: number;
-  pageouts:     number;
+  pageouts: number;
   thrash_index: number;
+  tps: number;
+  rpm: number;
 }
 
 interface SpikeRecord {
-  timestamp:    number;
+  timestamp: number;
   thrash_index: number;
-  wired_mb:     number;
+  wired_mb: number;
   swap_used_mb: number;
-  pageouts:     number;
+  pageouts: number;
 }
 
 interface QuotaRecord {
-  id:            string;
-  provider:      string;
-  model:         string;
+  id: string;
+  provider: string;
+  model: string;
   remaining_pct: number;
-  tokens_left:   string;
-  resets_in:     string;
-  status:        "healthy" | "warning" | "exhausted";
+  tokens_left: string;
+  resets_in: string;
+  status: "healthy" | "warning" | "exhausted";
 }
 
 interface EngineModel {
-  name:               string;
-  parameter_size:     string;
-  quantization:       string;
-  context_length:     number;
-  size_mb:            number;
-  vram_mb:            number;
-  ram_mb:             number;
-  gpu_offload_pct:    number;
-  kv_cache_bytes:     number;
-  kv_cache_mb:        number;
-  kv_cache_wired_pct: number;
-  weights_wired_pct:  number;
-  architecture?: {
-    layers:          number;
-    heads:           number;
-    head_dim:        number;
-    precision_bytes: number;
-  };
+  name: string;
+  size_gb: number;
+  kv_cache_mb: number;
+  context_length: number;
+  status: "loaded" | "unloading" | "idle";
 }
 
 interface EngineData {
-  status:             "active" | "idle" | "inactive";
-  engine:             string | null;
-  models:             EngineModel[];
-  total_kv_cache_mb:  number;
-  total_vram_mb:      number;
-  total_ram_mb:       number;
-  active_model_count: number;
+  engines: Array<{
+    name: string;
+    port: number;
+    active: boolean;
+    models: EngineModel[];
+  }>;
+  total_kv_cache_mb: number;
+  kv_pressure_pct: number;
+  summary: string;
 }
 
-type ConnectionStatus = "connecting" | "connected" | "reconnecting" | "error";
-type ActiveView       = "overview"  | "memory"    | "swap"         | "pressure";
-type TimeWindow       = "1m"        | "5m"        | "1h";
-type TopLevelTab      = "telemetry" | "quotas";
+interface ConfigData {
+  proxy_url: string;
+  poll_interval_seconds: number;
+  tdi_warning_threshold: number;
+  tdi_critical_threshold: number;
+  velocity_alert_tps: number;
+  velocity_alert_rpm: number;
+  notification_debounce_seconds: number;
+  swap_limit_ratio: number;
+}
 
-const API_BASE        = "http://127.0.0.1:8000";
-const WS_URL          = "ws://127.0.0.1:8000/ws/telemetry";
-const OMNIROUTE_BASE  = "http://localhost:20128";
-const MAX_POINTS      = 60;
-const BASE_RETRY_MS   = 1_500;
-const MAX_RETRY_MS    = 30_000;
-const VRAM_BUDGET     = 18_432; // MB — M-series 18 GB unified memory
-const MIN_PLOT_POINTS = 5;
+/* ── Formatting Helpers ───────────────────────────────────────────────── */
+function fmtMB(mb: number): string {
+  if (mb >= 1024) {
+    return `${(mb / 1024).toFixed(1)} GB`;
+  }
+  return `${Math.round(mb).toLocaleString()} MB`;
+}
 
-const HISTORY_POLL_MS: Record<TimeWindow, number> = {
-  "1m": 0,
-  "5m": 15_000,
-  "1h": 60_000,
-};
+function fmtNum(n: number): string {
+  return Math.round(n).toLocaleString();
+}
 
-/* ── Helpers ──────────────────────────────────────────────────────────── */
 function fmtTime(ts: number): string {
-  return new Date(ts * 1000).toLocaleTimeString("en-GB");
-}
-
-function fmtMB(n: number): string {
-  return n.toLocaleString("en-US");
+  const d = new Date(ts * 1000);
+  return d.toTimeString().slice(0, 8);
 }
 
 function toChartPoint(f: TelemetryFrame): ChartPoint {
   return {
-    t:            fmtTime(f.timestamp),
-    ts:           f.timestamp,
-    wired_mb:     Math.round(f.wired_mb),
+    t: fmtTime(f.timestamp),
+    ts: f.timestamp,
+    wired_mb: Math.round(f.wired_mb * 10) / 10,
     swap_used_mb: Math.round(f.swap_used_mb * 10) / 10,
-    pageouts:     f.pageouts,
+    pageouts: f.pageouts,
     thrash_index: Math.round(f.thrash_index * 1000) / 1000,
+    tps: f.velocity?.tps ?? 0,
+    rpm: f.velocity?.rpm ?? 0,
   };
 }
 
-function historyRowToChartPoint(row: Record<string, number>): ChartPoint {
-  return {
-    t:            fmtTime(row.timestamp),
-    ts:           row.timestamp,
-    wired_mb:     Math.round(row.wired_mb),
-    swap_used_mb: Math.round(row.swap_used_mb * 10) / 10,
-    pageouts:     Math.round(row.pageouts),
-    thrash_index: Math.round(row.thrash_index * 1000) / 1000,
-  };
-}
-
-function thrashColor(index: number): string {
-  if (index >= 0.7) return APPLE.red;
-  if (index >= 0.3) return APPLE.orange;
-  return APPLE.mint;
-}
-
-function thrashLabel(index: number): string {
-  if (index >= 0.7) return "Critical";
-  if (index >= 0.5) return "Elevated";
-  if (index >= 0.3) return "Moderate";
-  return "Nominal";
-}
-
-/** Capacity bar colour: Mint ≥50 %, Orange 20–49 %, Red <20 % */
-function quotaColor(pct: number): string {
-  if (pct >= 50) return APPLE.mint;
-  if (pct >= 20) return APPLE.orange;
-  return APPLE.red;
-}
-
-/* ── Inline SVG icons ─────────────────────────────────────────────────── */
-function IconAlertTriangle({ color = APPLE.orange, size = 14 }: { color?: string; size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none"
-      stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
-      aria-hidden="true">
-      <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
-      <line x1="12" y1="9"  x2="12"   y2="13" />
-      <line x1="12" y1="17" x2="12.01" y2="17" />
-    </svg>
-  );
-}
-
-function IconCopy({ color = APPLE.label3, size = 12 }: { color?: string; size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none"
-      stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
-      aria-hidden="true">
-      <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
-      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-    </svg>
-  );
-}
-
-function IconRefresh({ color = APPLE.label3, size = 12 }: { color?: string; size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none"
-      stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
-      aria-hidden="true">
-      <polyline points="23 4 23 10 17 10" />
-      <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
-    </svg>
-  );
-}
-
 /* ══════════════════════════════════════════════════════════════════════
-   TRAFFIC LIGHTS
+   HERO RADIAL GAUGE COMPONENT (SVG Semi-Circle Arc)
 ══════════════════════════════════════════════════════════════════════ */
-function TrafficLights() {
-  return (
-    <div className="traffic-lights" aria-hidden="true">
-      <span className="tl tl-close" title="Close" />
-      <span className="tl tl-min"   title="Minimise" />
-      <span className="tl tl-zoom"  title="Zoom" />
-    </div>
-  );
-}
+function TDIRadialGauge({ tdi }: { tdi: number }) {
+  const clamped = Math.max(0, Math.min(1, tdi));
+  
+  // Color dynamic interpolation
+  const color = clamped >= 0.90 ? "#f43f5e" : clamped >= 0.75 ? "#f59e0b" : "#10b981";
+  const glowColor = clamped >= 0.90 ? "rgba(244, 63, 94, 0.4)" : clamped >= 0.75 ? "rgba(245, 158, 11, 0.3)" : "rgba(16, 185, 129, 0.25)";
+  const statusLabel = clamped >= 0.90 ? "CRITICAL THRASH IMMINENT" : clamped >= 0.75 ? "ELEVATED PRESSURE WARNING" : "NOMINAL TELEMETRY";
 
-/* ══════════════════════════════════════════════════════════════════════
-   STATUS BADGE
-══════════════════════════════════════════════════════════════════════ */
-function StatusBadge({ status }: { status: ConnectionStatus }) {
-  const cfg: Record<ConnectionStatus, { color: string; label: string; glow: boolean }> = {
-    connected:    { color: APPLE.mint,   label: "Live",           glow: true  },
-    connecting:   { color: APPLE.blue,   label: "Connecting…",   glow: false },
-    reconnecting: { color: APPLE.orange, label: "Reconnecting…", glow: false },
-    error:        { color: APPLE.red,    label: "Disconnected",  glow: false },
-  };
-  const { color, label, glow } = cfg[status];
+  // Semi-circle Arc parameters: Radius 85, Center (120, 110), Path from (-85, 0) to (85, 0)
+  const radius = 85;
+  const strokeWidth = 14;
+  const arcLength = Math.PI * radius; // ~267.035
+  const strokeDashoffset = arcLength * (1 - clamped);
 
   return (
-    <span className="status-badge" style={{ background: `${color}18`, borderColor: `${color}38`, color }}>
-      <span
-        className={clsx("status-dot", glow && "status-dot-live")}
-        style={{ background: color, boxShadow: glow ? `0 0 6px 2px ${color}70` : "none" }}
-      />
-      {label}
-    </span>
-  );
-}
-
-/* ══════════════════════════════════════════════════════════════════════
-   TOP-LEVEL TAB BAR
-══════════════════════════════════════════════════════════════════════ */
-const TOP_TABS: { id: TopLevelTab; label: string }[] = [
-  { id: "telemetry", label: "System Telemetry" },
-  { id: "quotas",    label: "Agent & Gateway Telemetry" },
-];
-
-function TopTabBar({ active, onChange }: { active: TopLevelTab; onChange: (t: TopLevelTab) => void }) {
-  const idx = TOP_TABS.findIndex((t) => t.id === active);
-
-  return (
-    <div role="tablist" aria-label="Dashboard section"
-      style={{
-        position: "relative", display: "inline-flex",
-        background: APPLE.fillTertiary, borderRadius: 10,
-        padding: 2, gap: 0, border: `1px solid ${APPLE.separator}`,
-      }}
-    >
-      {/* Sliding capsule */}
-      <span aria-hidden="true" style={{
-        position: "absolute", top: 2, bottom: 2,
-        left:  `calc(${idx} * (100% - 4px) / ${TOP_TABS.length} + 2px)`,
-        width: `calc((100% - 4px) / ${TOP_TABS.length})`,
-        background: "rgba(255,255,255,0.10)", borderRadius: 8,
-        border: "1px solid rgba(255,255,255,0.16)",
-        transition: "left 0.2s cubic-bezier(0.4, 0, 0.2, 1)",
-        pointerEvents: "none", boxShadow: "0 1px 4px rgba(0,0,0,0.45)",
-      }} />
-      {TOP_TABS.map(({ id, label }) => (
-        <button key={id} role="tab" aria-selected={active === id} onClick={() => onChange(id)}
-          style={{
-            position: "relative", zIndex: 1,
-            padding: "5px 18px", fontSize: 12,
-            fontWeight: active === id ? 600 : 400,
-            color: active === id ? APPLE.label : APPLE.label3,
-            background: "transparent", border: "none", borderRadius: 8,
-            cursor: "pointer", letterSpacing: "0.01em", transition: "color 0.15s",
-            fontFamily: "-apple-system, BlinkMacSystemFont, sans-serif",
-            userSelect: "none", whiteSpace: "nowrap",
-          }}
-        >
-          {label}
-        </button>
-      ))}
-    </div>
-  );
-}
-
-/* ══════════════════════════════════════════════════════════════════════
-   SEGMENTED CONTROL
-══════════════════════════════════════════════════════════════════════ */
-const VIEWS: { id: ActiveView; label: string }[] = [
-  { id: "overview", label: "Overview" },
-  { id: "memory",   label: "Memory"   },
-  { id: "swap",     label: "Swap"     },
-  { id: "pressure", label: "Pressure" },
-];
-
-function SegmentedControl({ active, onChange }: { active: ActiveView; onChange: (v: ActiveView) => void }) {
-  return (
-    <nav className="seg-track" role="tablist" aria-label="Dashboard view">
-      {VIEWS.map(({ id, label }) => (
-        <button key={id} role="tab" aria-selected={active === id}
-          className={clsx("seg-item", active === id && "seg-item--active")}
-          onClick={() => onChange(id)}
-        >
-          {label}
-        </button>
-      ))}
-    </nav>
-  );
-}
-
-/* ══════════════════════════════════════════════════════════════════════
-   TIME WINDOW PICKER
-══════════════════════════════════════════════════════════════════════ */
-const TIME_WINDOWS: TimeWindow[] = ["1m", "5m", "1h"];
-
-function TimeWindowPicker({ active, onChange }: { active: TimeWindow; onChange: (w: TimeWindow) => void }) {
-  const idx = TIME_WINDOWS.indexOf(active);
-
-  return (
-    <div className="tw-track" role="group" aria-label="Time window"
-      style={{
-        position: "relative", display: "inline-flex",
-        background: APPLE.fillTertiary, borderRadius: 8,
-        padding: 2, gap: 0, border: `1px solid ${APPLE.separator}`,
-      }}
-    >
-      <span aria-hidden="true" style={{
-        position: "absolute", top: 2, bottom: 2,
-        left:  `calc(${idx} * (100% - 4px) / ${TIME_WINDOWS.length} + 2px)`,
-        width: `calc((100% - 4px) / ${TIME_WINDOWS.length})`,
-        background: "rgba(255,255,255,0.12)", borderRadius: 6,
-        border: "1px solid rgba(255,255,255,0.18)",
-        transition: "left 0.18s cubic-bezier(0.4, 0, 0.2, 1)",
-        pointerEvents: "none", boxShadow: "0 1px 3px rgba(0,0,0,0.4)",
-      }} />
-      {TIME_WINDOWS.map((w) => (
-        <button key={w} aria-pressed={active === w} onClick={() => onChange(w)}
-          style={{
-            position: "relative", zIndex: 1,
-            minWidth: 40, padding: "3px 10px", fontSize: 11,
-            fontWeight: active === w ? 600 : 400,
-            color: active === w ? APPLE.label : APPLE.label3,
-            background: "transparent", border: "none", borderRadius: 6,
-            cursor: "pointer", letterSpacing: "0.02em", transition: "color 0.15s",
-            fontFamily: "-apple-system, BlinkMacSystemFont, sans-serif",
-            userSelect: "none",
-          }}
-        >
-          {w}
-        </button>
-      ))}
-    </div>
-  );
-}
-
-/* ══════════════════════════════════════════════════════════════════════
-   VRAM GAUGE
-══════════════════════════════════════════════════════════════════════ */
-function VramGauge({ wired_mb, limit_mb }: { wired_mb: number; limit_mb: number }) {
-  const budget   = limit_mb > 0 ? limit_mb : VRAM_BUDGET;
-  const pct      = Math.min((wired_mb / budget) * 100, 100);
-  const barColor = pct >= 80 ? APPLE.red : pct >= 55 ? APPLE.orange : APPLE.blue;
-
-  return (
-    <div className="vram-gauge">
-      <div className="vram-track">
-        <div className="vram-fill" style={{ width: `${pct}%`, background: barColor, boxShadow: `0 0 8px 0 ${barColor}60` }} />
-      </div>
-      <div className="vram-labels">
-        <span style={{ color: barColor, fontVariantNumeric: "tabular-nums" }}>
-          {fmtMB(Math.round(wired_mb))} MB
-        </span>
-        <span style={{ color: APPLE.label3 }}>{pct.toFixed(1)}% of {fmtMB(budget)} MB</span>
-      </div>
-    </div>
-  );
-}
-
-/* ══════════════════════════════════════════════════════════════════════
-   THRASH METER
-══════════════════════════════════════════════════════════════════════ */
-function ThrashMeter({ index }: { index: number }) {
-  const color = thrashColor(index);
-  const pct   = Math.min(index * 100, 100);
-
-  return (
-    <div className="thrash-meter">
-      <div className="vram-track">
-        <div className="vram-fill" style={{ width: `${pct}%`, background: color, boxShadow: `0 0 8px 0 ${color}60` }} />
-      </div>
-      <div className="vram-labels">
-        <span style={{ color, fontVariantNumeric: "tabular-nums" }}>{index.toFixed(3)}</span>
-        <span style={{ color: APPLE.label3 }}>{thrashLabel(index)}</span>
-      </div>
-    </div>
-  );
-}
-
-/* ══════════════════════════════════════════════════════════════════════
-   STAT CARD
-══════════════════════════════════════════════════════════════════════ */
-function StatCard({ label, accent, children }: { label: string; accent: string; children: React.ReactNode }) {
-  return (
-    <div className="stat-card">
-      <span className="stat-label" style={{ color: accent }}>{label}</span>
-      <div className="stat-body">{children}</div>
-    </div>
-  );
-}
-
-/* ══════════════════════════════════════════════════════════════════════
-   CHART TOOLTIP
-══════════════════════════════════════════════════════════════════════ */
-function ChartTooltip({ active, payload, label, unit }: {
-  active?:  boolean;
-  payload?: Array<{ value: number }>;
-  label?:   string;
-  unit:     string;
-}) {
-  if (!active || !payload?.length) return null;
-  return (
-    <div className="chart-tooltip">
-      <span className="chart-tooltip-time">{label}</span>
-      <span className="chart-tooltip-value" style={{ fontVariantNumeric: "tabular-nums" }}>
-        {payload[0].value.toLocaleString("en-US")}
-        {unit ? <span className="chart-tooltip-unit"> {unit}</span> : null}
-      </span>
-    </div>
-  );
-}
-
-/* ══════════════════════════════════════════════════════════════════════
-   CHART EMPTY STATE
-══════════════════════════════════════════════════════════════════════ */
-function ChartEmptyState({ loading }: { loading: boolean }) {
-  return (
-    <div aria-live="polite" style={{
-      height: 168, display: "flex", flexDirection: "column",
-      alignItems: "center", justifyContent: "center", gap: 8,
-      color: APPLE.label3, fontFamily: "-apple-system, BlinkMacSystemFont, sans-serif",
-      fontSize: 12, letterSpacing: "0.01em", userSelect: "none",
-    }}>
-      {loading ? (
-        <span style={{ display: "inline-flex", gap: 5 }} aria-label="Loading historical metrics">
-          {[0, 1, 2].map((i) => (
-            <span key={i} style={{
-              width: 5, height: 5, borderRadius: "50%",
-              background: APPLE.label4, display: "inline-block",
-              animation: `sentinel-pulse 1.2s ease-in-out ${i * 0.2}s infinite`,
-            }} />
-          ))}
-        </span>
-      ) : (
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none"
-          stroke={APPLE.label4} strokeWidth="1.5" strokeLinecap="round"
-          strokeLinejoin="round" aria-hidden="true">
-          <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
-        </svg>
-      )}
-      <span>{loading ? "Fetching historical metrics…" : "Collecting historical metrics…"}</span>
-    </div>
-  );
-}
-
-/* ══════════════════════════════════════════════════════════════════════
-   MINI CHART
-══════════════════════════════════════════════════════════════════════ */
-interface MiniChartProps {
-  data:          ChartPoint[];
-  dataKey:       keyof ChartPoint;
-  color:         string;
-  unit:          string;
-  domain?:       [number | string, number | string];
-  spikeMarkers?: SpikeRecord[];
-  loading?:      boolean;
-}
-
-function MiniChart({ data, dataKey, color, unit, domain, spikeMarkers, loading }: MiniChartProps) {
-  const gradId    = `grad-${String(dataKey)}`;
-  const axisColor = APPLE.label4;
-
-  if (data.length < MIN_PLOT_POINTS) {
-    return <ChartEmptyState loading={loading ?? false} />;
-  }
-
-  const firstTs = data[0]?.ts  ?? 0;
-  const lastTs  = data[data.length - 1]?.ts ?? 0;
-  const visibleSpikes = spikeMarkers?.filter(
-    (s) => s.timestamp >= firstTs && s.timestamp <= lastTs
-  ) ?? [];
-
-  function closestLabel(spikeTs: number): string {
-    if (!data.length) return "";
-    let best = data[0];
-    let bestDiff = Math.abs(data[0].ts - spikeTs);
-    for (const pt of data) {
-      const diff = Math.abs(pt.ts - spikeTs);
-      if (diff < bestDiff) { bestDiff = diff; best = pt; }
-    }
-    return best.t;
-  }
-
-  return (
-    <ResponsiveContainer width="100%" height={168}>
-      <AreaChart data={data} margin={{ top: 8, right: 2, bottom: 0, left: -10 }}>
-        <defs>
-          <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%"   stopColor={color} stopOpacity={0.4} />
-            <stop offset="100%" stopColor={color} stopOpacity={0}   />
-          </linearGradient>
-        </defs>
-        <CartesianGrid stroke="rgba(255,255,255,0.04)" vertical={false} strokeDasharray="0" />
-        <XAxis dataKey="t"
-          tick={{ fill: APPLE.label3, fontSize: 10, fontFamily: "-apple-system" }}
-          tickLine={false} axisLine={false} interval="preserveStartEnd"
-          style={{ userSelect: "none" }}
-        />
-        <YAxis
-          tick={{ fill: APPLE.label3, fontSize: 10, fontFamily: "-apple-system", dx: -2 }}
-          tickLine={false} axisLine={false} width={46}
-          domain={domain ?? ["auto", "auto"]}
-          tickFormatter={(v: number) => v >= 1000 ? `${(v / 1000).toFixed(0)}k` : String(v)}
-          style={{ userSelect: "none" }}
-        />
-        <Tooltip content={<ChartTooltip unit={unit} />} cursor={{ stroke: axisColor, strokeWidth: 1 }} />
-        {visibleSpikes.map((s) => (
-          <ReferenceLine key={s.timestamp} x={closestLabel(s.timestamp)}
-            stroke={APPLE.orange} strokeWidth={1.5} strokeDasharray="3 3"
-            label={{ value: "⚠", position: "top", fill: APPLE.orange, fontSize: 10 }}
-          />
-        ))}
-        <Area type="monotone" dataKey={dataKey} stroke={color} strokeWidth={1.5}
-          fill={`url(#${gradId})`} dot={false}
-          activeDot={{ r: 3, fill: color, strokeWidth: 0 }}
-          isAnimationActive={false}
-        />
-      </AreaChart>
-    </ResponsiveContainer>
-  );
-}
-
-/* ══════════════════════════════════════════════════════════════════════
-   CHART CARD
-══════════════════════════════════════════════════════════════════════ */
-function ChartCard({ title, children, toolbar }: {
-  title:    string;
-  children: React.ReactNode;
-  toolbar?: React.ReactNode;
-}) {
-  return (
-    <div className="chart-card">
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
-        <p className="chart-card-title" style={{ margin: 0 }}>{title}</p>
-        {toolbar}
-      </div>
-      {children}
-    </div>
-  );
-}
-
-/* ══════════════════════════════════════════════════════════════════════
-   SPIKES INSPECTOR
-══════════════════════════════════════════════════════════════════════ */
-function SpikesInspector({ spikes, onSelect }: { spikes: SpikeRecord[]; onSelect: (s: SpikeRecord) => void }) {
-  const [open, setOpen] = useState(false);
-  const ref             = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    function handle(e: MouseEvent) {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    }
-    document.addEventListener("mousedown", handle);
-    return () => document.removeEventListener("mousedown", handle);
-  }, [open]);
-
-  return (
-    <div ref={ref} style={{ position: "relative", display: "inline-block" }}>
-      <button onClick={() => setOpen((o) => !o)} aria-haspopup="listbox" aria-expanded={open}
-        style={{
-          display: "inline-flex", alignItems: "center", gap: 6,
-          padding: "4px 10px", fontSize: 12, fontWeight: 500,
-          color: APPLE.orange, background: `${APPLE.orange}14`,
-          border: `1px solid ${APPLE.orange}30`, borderRadius: 8,
-          cursor: "pointer", fontFamily: "-apple-system, BlinkMacSystemFont, sans-serif",
-          userSelect: "none", transition: "background 0.12s", whiteSpace: "nowrap",
-        }}
+    <div className="relative flex flex-col items-center justify-center p-4 select-none">
+      <svg
+        viewBox="0 0 240 140"
+        className="w-full max-w-[280px] overflow-visible"
+        aria-label={`Thrash Danger Index: ${(clamped * 100).toFixed(1)}%`}
       >
-        <IconAlertTriangle color={APPLE.orange} size={13} />
-        Previous Spikes
-        {spikes.length > 0 && (
-          <span style={{
-            background: APPLE.orange, color: "#000", borderRadius: 10,
-            fontSize: 10, fontWeight: 700, padding: "0 5px",
-            lineHeight: "16px", minWidth: 16, textAlign: "center",
-          }}>
-            {spikes.length}
+        <defs>
+          <filter id="tdi-glow" x="-20%" y="-20%" width="140%" height="140%">
+            <feGaussianBlur stdDeviation="6" result="blur" />
+            <feComposite in="SourceGraphic" in2="blur" operator="over" />
+          </filter>
+        </defs>
+
+        {/* Background Track Arc */}
+        <path
+          d="M 35 120 A 85 85 0 0 1 205 120"
+          fill="none"
+          stroke="#27272a"
+          strokeWidth={strokeWidth}
+          strokeLinecap="round"
+        />
+
+        {/* Warning Threshold Line Marker at 0.75 (angle: 180 - 0.75*180 = 45 deg) */}
+        {/* Critical Threshold Line Marker at 0.90 (angle: 180 - 0.90*180 = 18 deg) */}
+        <path
+          d="M 35 120 A 85 85 0 0 1 205 120"
+          fill="none"
+          stroke="rgba(255,255,255,0.06)"
+          strokeWidth={strokeWidth}
+          strokeDasharray="2 12"
+        />
+
+        {/* Active Meter Arc */}
+        <path
+          d="M 35 120 A 85 85 0 0 1 205 120"
+          fill="none"
+          stroke={color}
+          strokeWidth={strokeWidth}
+          strokeLinecap="round"
+          strokeDasharray={arcLength}
+          strokeDashoffset={strokeDashoffset}
+          filter={clamped >= 0.75 ? "url(#tdi-glow)" : undefined}
+          className="gauge-track"
+        />
+
+        {/* Scale labels */}
+        <text x="32" y="136" textAnchor="middle" className="text-[10px] font-mono fill-zinc-500">0.0</text>
+        <text x="120" y="32" textAnchor="middle" className="text-[10px] font-mono fill-zinc-500">0.5</text>
+        <text x="175" y="55" textAnchor="middle" className="text-[10px] font-mono fill-amber-500/80">0.75</text>
+        <text x="208" y="136" textAnchor="middle" className="text-[10px] font-mono fill-zinc-500">1.0</text>
+      </svg>
+
+      {/* Central Numeric Readout */}
+      <div className="absolute top-[52px] flex flex-col items-center text-center">
+        <div className="text-[11px] font-mono uppercase tracking-widest text-zinc-400 font-medium">
+          Thrash Index
+        </div>
+        <div
+          className="text-4xl sm:text-5xl font-mono font-bold tracking-tight tabular-nums mt-0.5"
+          style={{ color, textShadow: `0 0 20px ${glowColor}` }}
+        >
+          {clamped.toFixed(2)}
+        </div>
+        <div
+          className="mt-1 px-2.5 py-0.5 rounded-full text-[10px] font-mono font-semibold uppercase tracking-wider border"
+          style={{
+            color,
+            borderColor: `${color}40`,
+            backgroundColor: `${color}15`,
+          }}
+        >
+          {statusLabel}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   HIGH-PRECISION SVG SPARKLINE COMPONENT
+══════════════════════════════════════════════════════════════════════ */
+function TelemetrySparkline({
+  data,
+  dataKey,
+  color,
+  unit,
+  minVal = 0,
+  maxVal,
+  warningLine,
+  criticalLine,
+  title,
+  currentVal,
+}: {
+  data: ChartPoint[];
+  dataKey: keyof ChartPoint;
+  color: string;
+  unit: string;
+  minVal?: number;
+  maxVal?: number;
+  warningLine?: number;
+  criticalLine?: number;
+  title: string;
+  currentVal?: string | number;
+}) {
+  const [hoverIndex, setHoverIndex] = useState<number | null>(null);
+
+  const points = useMemo(() => {
+    if (!data || data.length === 0) return [];
+    return data.map((d) => Number(d[dataKey]) || 0);
+  }, [data, dataKey]);
+
+  const height = 120;
+  const width = 600;
+  const padTop = 15;
+  const padBottom = 20;
+  const padLeft = 10;
+  const padRight = 10;
+  const chartH = height - padTop - padBottom;
+  const chartW = width - padLeft - padRight;
+
+  const yMax = useMemo(() => {
+    if (maxVal !== undefined) return maxVal;
+    const computedMax = Math.max(...points, 0.001);
+    return computedMax * 1.15;
+  }, [points, maxVal]);
+
+  const yMin = minVal;
+
+  const getX = (idx: number, total: number) => {
+    if (total <= 1) return padLeft;
+    return padLeft + (idx / (total - 1)) * chartW;
+  };
+
+  const getY = (val: number) => {
+    const norm = Math.max(0, Math.min(1, (val - yMin) / (yMax - yMin)));
+    return padTop + (1 - norm) * chartH;
+  };
+
+  // Build SVG Path
+  const { pathD, areaD, coords } = useMemo(() => {
+    if (points.length === 0) return { pathD: "", areaD: "", coords: [] };
+    const pts = points.map((val, i) => ({
+      x: getX(i, points.length),
+      y: getY(val),
+      val,
+      time: data[i]?.t || "",
+    }));
+
+    const pathString = pts.reduce((acc, p, i) => {
+      return i === 0 ? `M ${p.x.toFixed(1)} ${p.y.toFixed(1)}` : `${acc} L ${p.x.toFixed(1)} ${p.y.toFixed(1)}`;
+    }, "");
+
+    const areaString = `${pathString} L ${pts[pts.length - 1].x.toFixed(1)} ${(padTop + chartH).toFixed(1)} L ${pts[0].x.toFixed(1)} ${(padTop + chartH).toFixed(1)} Z`;
+
+    return { pathD: pathString, areaD: areaString, coords: pts };
+  }, [points, yMax, yMin, data]);
+
+  const hoveredPoint = hoverIndex !== null && coords[hoverIndex] ? coords[hoverIndex] : null;
+
+  return (
+    <div className="telemetry-card p-4 flex flex-col justify-between">
+      {/* Sparkline Header */}
+      <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center gap-2">
+          <div className="w-2 h-2 rounded-full" style={{ backgroundColor: color }} />
+          <span className="text-xs font-mono uppercase tracking-wider text-zinc-400 font-medium">
+            {title}
           </span>
-        )}
-      </button>
-
-      {open && (
-        <div role="listbox" aria-label="Previous spike events" style={{
-          position: "absolute", top: "calc(100% + 6px)", right: 0, zIndex: 100,
-          minWidth: 280, background: "rgba(28,28,30,0.92)",
-          backdropFilter: "blur(20px) saturate(180%)",
-          WebkitBackdropFilter: "blur(20px) saturate(180%)",
-          border: `1px solid ${APPLE.separator}`, borderRadius: 12,
-          boxShadow: "0 8px 32px rgba(0,0,0,0.6)", overflow: "hidden",
-        }}>
-          <div style={{
-            padding: "10px 14px 8px", borderBottom: `1px solid ${APPLE.separator}`,
-            display: "flex", alignItems: "center", gap: 6,
-          }}>
-            <IconAlertTriangle color={APPLE.orange} size={12} />
-            <span style={{
-              fontSize: 12, fontWeight: 600, color: APPLE.label2,
-              fontFamily: "-apple-system, BlinkMacSystemFont, sans-serif",
-              letterSpacing: "0.02em",
-            }}>
-              Spike Events — last 24 h
+        </div>
+        <div className="flex items-baseline gap-1.5 font-mono">
+          <span className="text-lg font-bold text-zinc-100 tabular-nums">
+            {hoveredPoint ? hoveredPoint.val.toFixed(2) : (currentVal ?? "—")}
+          </span>
+          <span className="text-xs text-zinc-500">{unit}</span>
+          {hoveredPoint && (
+            <span className="text-[10px] text-zinc-400 ml-2 px-1.5 py-0.5 rounded bg-zinc-800 border border-zinc-700">
+              {hoveredPoint.time}
             </span>
-          </div>
-
-          {spikes.length === 0 ? (
-            <div style={{
-              padding: "16px 14px", fontSize: 12, color: APPLE.label3,
-              fontFamily: "-apple-system, BlinkMacSystemFont, sans-serif", textAlign: "center",
-            }}>
-              No spikes detected
-            </div>
-          ) : (
-            <ul style={{ listStyle: "none", margin: 0, padding: "4px 0" }}>
-              {spikes.map((s, i) => {
-                const tc = thrashColor(s.thrash_index);
-                return (
-                  <li key={s.timestamp}>
-                    <button role="option" aria-selected={false}
-                      onClick={() => { onSelect(s); setOpen(false); }}
-                      style={{
-                        display: "block", width: "100%", textAlign: "left",
-                        padding: "8px 14px", background: "transparent", border: "none",
-                        cursor: "pointer", fontFamily: "-apple-system, BlinkMacSystemFont, sans-serif",
-                        transition: "background 0.1s",
-                      }}
-                      onMouseEnter={(e) => ((e.currentTarget as HTMLButtonElement).style.background = "rgba(255,255,255,0.06)")}
-                      onMouseLeave={(e) => ((e.currentTarget as HTMLButtonElement).style.background = "transparent")}
-                    >
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 2 }}>
-                        <span style={{ fontSize: 11, color: APPLE.label3 }}>#{i + 1} — {fmtTime(s.timestamp)}</span>
-                        <span style={{ fontSize: 11, fontWeight: 600, color: tc, fontVariantNumeric: "tabular-nums" }}>
-                          {thrashLabel(s.thrash_index)}
-                        </span>
-                      </div>
-                      <div style={{ display: "flex", gap: 12, fontSize: 11, color: APPLE.label2, fontVariantNumeric: "tabular-nums" }}>
-                        <span>Thrash: <span style={{ color: tc }}>{s.thrash_index.toFixed(3)}</span></span>
-                        <span>Wired: <span style={{ color: APPLE.blue }}>{fmtMB(Math.round(s.wired_mb))} MB</span></span>
-                        <span>Swap: <span style={{ color: APPLE.cyan }}>{fmtMB(Math.round(s.swap_used_mb))} MB</span></span>
-                      </div>
-                    </button>
-                    {i < spikes.length - 1 && (
-                      <div style={{ height: 1, background: APPLE.separator, margin: "0 14px" }} />
-                    )}
-                  </li>
-                );
-              })}
-            </ul>
           )}
         </div>
-      )}
-    </div>
-  );
-}
-
-/* ══════════════════════════════════════════════════════════════════════
-   QUOTA CAPACITY BAR
-══════════════════════════════════════════════════════════════════════ */
-function QuotaBar({ pct }: { pct: number }) {
-  const color   = quotaColor(pct);
-  const clamped = Math.max(0, Math.min(pct, 100));
-
-  return (
-    <div style={{
-      height: 6, background: "rgba(255,255,255,0.08)",
-      borderRadius: 3, overflow: "hidden",
-    }}>
-      <div style={{
-        height: "100%", width: `${clamped}%`,
-        background: color, borderRadius: 3,
-        boxShadow: `0 0 6px 0 ${color}70`,
-        transition: "width 0.4s cubic-bezier(0.4, 0, 0.2, 1)",
-      }} />
-    </div>
-  );
-}
-
-/* ══════════════════════════════════════════════════════════════════════
-   QUOTA PROVIDER CARD  — frosted glass, Apple HIG layout
-══════════════════════════════════════════════════════════════════════ */
-function QuotaCard({ record }: { record: QuotaRecord }) {
-  const pctColor = quotaColor(record.remaining_pct);
-
-  const statusColor: Record<QuotaRecord["status"], string> = {
-    healthy:   APPLE.mint,
-    warning:   APPLE.orange,
-    exhausted: APPLE.red,
-  };
-  const dotColor = statusColor[record.status];
-
-  return (
-    <div style={{
-      background:    "rgba(255,255,255,0.045)",
-      backdropFilter:"blur(20px) saturate(160%)",
-      WebkitBackdropFilter: "blur(20px) saturate(160%)",
-      border:        `1px solid ${APPLE.separator}`,
-      borderRadius:  16,
-      padding:       "18px 18px 14px",
-      display:       "flex",
-      flexDirection: "column",
-      gap:           0,
-    }}>
-
-      {/* ── Header: provider name + status pill ── */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 4 }}>
-        <div>
-          <p style={{
-            margin: 0, fontSize: 13, fontWeight: 600,
-            color: APPLE.label, letterSpacing: "0.01em",
-            fontFamily: "-apple-system, BlinkMacSystemFont, sans-serif",
-          }}>
-            {record.provider}
-          </p>
-          <p style={{
-            margin: "2px 0 0", fontSize: 11, color: APPLE.label3,
-            fontFamily: "-apple-system, BlinkMacSystemFont, sans-serif",
-          }}>
-            {record.model}
-          </p>
-        </div>
-
-        <span style={{
-          display: "inline-flex", alignItems: "center", gap: 5,
-          fontSize: 10, fontWeight: 600,
-          color: dotColor,
-          background: `${dotColor}18`,
-          border: `1px solid ${dotColor}35`,
-          borderRadius: 20, padding: "2px 8px",
-          fontFamily: "-apple-system, BlinkMacSystemFont, sans-serif",
-          whiteSpace: "nowrap", letterSpacing: "0.03em",
-        }}>
-          <span style={{
-            width: 5, height: 5, borderRadius: "50%",
-            background: dotColor, display: "inline-block",
-            boxShadow: record.status === "healthy" ? `0 0 5px 1px ${dotColor}80` : "none",
-          }} />
-          {record.status.charAt(0).toUpperCase() + record.status.slice(1)}
-        </span>
       </div>
 
-      {/* ── Large percentage readout ── */}
-      <div style={{
-        fontSize: 36, fontWeight: 700,
-        color: pctColor,
-        fontVariantNumeric: "tabular-nums",
-        letterSpacing: "-0.02em",
-        lineHeight: 1,
-        margin: "10px 0 8px",
-        fontFamily: "-apple-system, BlinkMacSystemFont, sans-serif",
-      }}>
-        {record.remaining_pct.toFixed(0)}
-        <span style={{ fontSize: 16, fontWeight: 500, color: APPLE.label3, marginLeft: 2 }}>%</span>
+      {/* SVG Canvas */}
+      <div className="relative w-full h-[120px]">
+        {points.length > 1 ? (
+          <svg
+            viewBox={`0 0 ${width} ${height}`}
+            preserveAspectRatio="none"
+            className="w-full h-full cursor-crosshair overflow-visible"
+            onMouseLeave={() => setHoverIndex(null)}
+            onMouseMove={(e) => {
+              const rect = e.currentTarget.getBoundingClientRect();
+              const relX = (e.clientX - rect.left) / rect.width;
+              const idx = Math.round(relX * (points.length - 1));
+              setHoverIndex(Math.max(0, Math.min(points.length - 1, idx)));
+            }}
+          >
+            <defs>
+              <linearGradient id={`grad-${dataKey}`} x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor={color} stopOpacity="0.28" />
+                <stop offset="100%" stopColor={color} stopOpacity="0.0" />
+              </linearGradient>
+            </defs>
+
+            {/* Horizontal Gridlines */}
+            <line x1={padLeft} y1={padTop} x2={width - padRight} y2={padTop} stroke="#27272a" strokeDasharray="3 3" />
+            <line x1={padLeft} y1={padTop + chartH / 2} x2={width - padRight} y2={padTop + chartH / 2} stroke="#27272a" strokeDasharray="3 3" />
+            <line x1={padLeft} y1={padTop + chartH} x2={width - padRight} y2={padTop + chartH} stroke="#27272a" />
+
+            {/* Threshold reference lines if specified */}
+            {warningLine !== undefined && warningLine <= yMax && (
+              <line
+                x1={padLeft}
+                y1={getY(warningLine)}
+                x2={width - padRight}
+                y2={getY(warningLine)}
+                stroke="#f59e0b"
+                strokeDasharray="4 4"
+                strokeWidth="1.2"
+                opacity="0.85"
+              />
+            )}
+            {criticalLine !== undefined && criticalLine <= yMax && (
+              <line
+                x1={padLeft}
+                y1={getY(criticalLine)}
+                x2={width - padRight}
+                y2={getY(criticalLine)}
+                stroke="#f43f5e"
+                strokeDasharray="4 4"
+                strokeWidth="1.2"
+                opacity="0.85"
+              />
+            )}
+
+            {/* Area Fill */}
+            <path d={areaD} fill={`url(#grad-${dataKey})`} />
+
+            {/* Path Stroke */}
+            <path d={pathD} fill="none" stroke={color} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+
+            {/* Hover Crosshair */}
+            {hoveredPoint && (
+              <>
+                <line
+                  x1={hoveredPoint.x}
+                  y1={padTop}
+                  x2={hoveredPoint.x}
+                  y2={padTop + chartH}
+                  stroke="#71717a"
+                  strokeWidth="1"
+                  strokeDasharray="2 2"
+                />
+                <circle cx={hoveredPoint.x} cy={hoveredPoint.y} r="4" fill={color} stroke="#09090b" strokeWidth="2" />
+              </>
+            )}
+          </svg>
+        ) : (
+          <div className="h-full flex items-center justify-center text-xs font-mono text-zinc-600">
+            Awaiting 60s ring buffer telemetry…
+          </div>
+        )}
       </div>
 
-      {/* ── Segmented capacity bar ── */}
-      <QuotaBar pct={record.remaining_pct} />
-
-      {/* ── Metadata row: tokens left + reset pill ── */}
-      <div style={{
-        display: "flex", alignItems: "center",
-        justifyContent: "space-between",
-        marginTop: 10, gap: 8, flexWrap: "wrap",
-      }}>
-        <span style={{
-          fontSize: 11, color: APPLE.label2,
-          fontVariantNumeric: "tabular-nums",
-          fontFamily: "-apple-system, BlinkMacSystemFont, sans-serif",
-        }}>
-          {record.tokens_left}
-        </span>
-
-        {/* Reset time pill */}
-        <span style={{
-          display: "inline-flex", alignItems: "center", gap: 4,
-          fontSize: 10, fontWeight: 500,
-          color: APPLE.label3,
-          background: "rgba(255,255,255,0.07)",
-          border: `1px solid ${APPLE.separator}`,
-          borderRadius: 20, padding: "2px 8px",
-          fontFamily: "-apple-system, BlinkMacSystemFont, sans-serif",
-          whiteSpace: "nowrap",
-        }}>
-          ↺ {record.resets_in}
-        </span>
+      {/* Axis bounds */}
+      <div className="flex justify-between items-center text-[10px] font-mono text-zinc-500 mt-1">
+        <span>{data[0]?.t || "—"}</span>
+        <span>{data[data.length - 1]?.t || "Now"}</span>
       </div>
     </div>
   );
 }
 
 /* ══════════════════════════════════════════════════════════════════════
-   LOCAL INFERENCE ENGINE CARDS (TIER 2)
-══════════════════════════════════════════════════════════════════════ */
-function LocalEngineCard({ model, engine }: { model: EngineModel; engine: string | null }) {
-  const engineLabel = engine ? engine.toUpperCase() : "LOCAL LLM";
-  const offloadColor =
-    model.gpu_offload_pct >= 99 ? APPLE.mint : model.gpu_offload_pct >= 50 ? APPLE.blue : APPLE.orange;
-
-  return (
-    <div style={{
-      background: "rgba(255,255,255,0.045)",
-      backdropFilter: "blur(20px) saturate(160%)",
-      WebkitBackdropFilter: "blur(20px) saturate(160%)",
-      border: `1px solid ${APPLE.separator}`,
-      borderRadius: 16,
-      padding: "18px 20px",
-      marginBottom: 16,
-      display: "flex",
-      flexDirection: "column",
-      gap: 14,
-    }}>
-      {/* Top Header */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 8 }}>
-        <div>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <span style={{
-              fontSize: 11, fontWeight: 700, letterSpacing: "0.06em",
-              color: APPLE.indigo, textTransform: "uppercase",
-              fontFamily: "-apple-system, BlinkMacSystemFont, sans-serif",
-            }}>
-              Active Local Inference
-            </span>
-            <span style={{
-              fontSize: 10, fontWeight: 600, color: APPLE.label3,
-              background: "rgba(255,255,255,0.08)", padding: "1px 6px",
-              borderRadius: 6,
-            }}>
-              Tier 2 Engine
-            </span>
-          </div>
-          <p style={{
-            margin: "4px 0 0", fontSize: 16, fontWeight: 700,
-            color: APPLE.label, fontFamily: "-apple-system, BlinkMacSystemFont, sans-serif",
-            letterSpacing: "-0.01em",
-          }}>
-            {model.name}
-          </p>
-          <p style={{ margin: "2px 0 0", fontSize: 11, color: APPLE.label3 }}>
-            {model.parameter_size ? `${model.parameter_size} params` : ""} · {model.quantization}
-          </p>
-        </div>
-
-        {/* Runtime Live Badge */}
-        <span style={{
-          display: "inline-flex", alignItems: "center", gap: 5,
-          fontSize: 11, fontWeight: 600, color: APPLE.mint,
-          background: `${APPLE.mint}18`, border: `1px solid ${APPLE.mint}35`,
-          borderRadius: 20, padding: "3px 10px",
-        }}>
-          <span style={{
-            width: 6, height: 6, borderRadius: "50%",
-            background: APPLE.mint, boxShadow: `0 0 6px 1px ${APPLE.mint}80`,
-          }} />
-          {engineLabel} · Running
-        </span>
-      </div>
-
-      {/* 3 Metric Columns */}
-      <div style={{
-        display: "grid",
-        gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
-        gap: 12,
-        padding: "12px 14px",
-        background: "rgba(0,0,0,0.25)",
-        borderRadius: 12,
-        border: "1px solid rgba(255,255,255,0.04)",
-      }}>
-        {/* Context Window */}
-        <div>
-          <span style={{ fontSize: 10, fontWeight: 600, color: APPLE.label3, textTransform: "uppercase", letterSpacing: "0.04em" }}>
-            Context Window (N_ctx)
-          </span>
-          <div style={{ fontSize: 20, fontWeight: 700, color: APPLE.label, fontVariantNumeric: "tabular-nums", marginTop: 2 }}>
-            {fmtMB(model.context_length)} <span style={{ fontSize: 12, fontWeight: 500, color: APPLE.label3 }}>tokens</span>
-          </div>
-          <span style={{ fontSize: 10, color: APPLE.label3 }}>Attention capacity</span>
-        </div>
-
-        {/* KV Cache Memory */}
-        <div>
-          <span style={{ fontSize: 10, fontWeight: 600, color: APPLE.label3, textTransform: "uppercase", letterSpacing: "0.04em" }}>
-            KV-Cache Memory
-          </span>
-          <div style={{ fontSize: 20, fontWeight: 700, color: APPLE.indigo, fontVariantNumeric: "tabular-nums", marginTop: 2 }}>
-            {fmtMB(Math.round(model.kv_cache_mb))} <span style={{ fontSize: 12, fontWeight: 500, color: APPLE.label3 }}>MB</span>
-          </div>
-          <span style={{ fontSize: 10, color: model.kv_cache_wired_pct > 25 ? APPLE.orange : APPLE.label2 }}>
-            {model.kv_cache_wired_pct > 0 ? `${model.kv_cache_wired_pct.toFixed(1)}% of Wired VRAM` : "Dynamic"}
-          </span>
-        </div>
-
-        {/* GPU Offload */}
-        <div>
-          <span style={{ fontSize: 10, fontWeight: 600, color: APPLE.label3, textTransform: "uppercase", letterSpacing: "0.04em" }}>
-            GPU Offload
-          </span>
-          <div style={{ fontSize: 20, fontWeight: 700, color: offloadColor, fontVariantNumeric: "tabular-nums", marginTop: 2 }}>
-            {model.gpu_offload_pct.toFixed(1)} <span style={{ fontSize: 12, fontWeight: 500, color: APPLE.label3 }}>%</span>
-          </div>
-          <span style={{ fontSize: 10, color: APPLE.label3 }}>
-            {fmtMB(Math.round(model.vram_mb))} MB VRAM {model.ram_mb > 0 ? `· ${fmtMB(Math.round(model.ram_mb))} MB RAM` : "· 100% Metal"}
-          </span>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function LocalEngineStandby() {
-  return (
-    <div style={{
-      background: "rgba(255,255,255,0.02)",
-      border: "1px dashed rgba(255,255,255,0.10)",
-      borderRadius: 14,
-      padding: "12px 16px",
-      marginBottom: 16,
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "space-between",
-      flexWrap: "wrap",
-      gap: 10,
-    }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-        <span style={{
-          width: 7, height: 7, borderRadius: "50%",
-          background: APPLE.label4, display: "inline-block",
-        }} />
-        <div>
-          <p style={{
-            margin: 0, fontSize: 12, fontWeight: 600,
-            color: APPLE.label2, fontFamily: "-apple-system, BlinkMacSystemFont, sans-serif",
-          }}>
-            Local Inference Daemon: Standby
-          </p>
-          <p style={{ margin: "2px 0 0", fontSize: 10, color: APPLE.label3 }}>
-            Ollama / LM Studio runtime offline (ports :11434 / :1234 idle)
-          </p>
-        </div>
-      </div>
-
-      <span style={{
-        fontSize: 10, fontWeight: 500, color: APPLE.label3,
-        background: "rgba(255,255,255,0.05)", padding: "2px 8px",
-        borderRadius: 12, border: `1px solid ${APPLE.separator}`,
-      }}>
-        0 Active Models
-      </span>
-    </div>
-  );
-}
-
-/* ══════════════════════════════════════════════════════════════════════
-   RUNAWAY AGENT LOOP WARNING BANNER
-══════════════════════════════════════════════════════════════════════ */
-function RunawayWarningBanner({ reason }: { reason?: string }) {
-  return (
-    <div
-      role="alert"
-      style={{
-        background: "linear-gradient(90deg, rgba(255, 69, 58, 0.20) 0%, rgba(255, 69, 58, 0.08) 100%)",
-        border: "1px solid rgba(255, 69, 58, 0.55)",
-        borderRadius: 14,
-        padding: "14px 18px",
-        marginBottom: 16,
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "space-between",
-        flexWrap: "wrap",
-        gap: 12,
-        boxShadow: "0 0 24px rgba(255, 69, 58, 0.18)",
-        animation: "sentinel-warning-glow 2s ease-in-out infinite",
-      }}
-    >
-      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-        <span style={{ fontSize: 24, lineHeight: 1 }} aria-hidden="true">⚠️</span>
-        <div>
-          <p style={{
-            margin: 0,
-            fontSize: 13,
-            fontWeight: 700,
-            color: "#ff6961",
-            fontFamily: "-apple-system, BlinkMacSystemFont, sans-serif",
-            letterSpacing: "-0.01em",
-          }}>
-            ⚠️ Runaway Agent Loop Detected: Sustained token burn exceeding safety thresholds.
-          </p>
-          <p style={{
-            margin: "3px 0 0",
-            fontSize: 11,
-            color: "rgba(235, 235, 245, 0.75)",
-            fontFamily: "-apple-system, BlinkMacSystemFont, sans-serif",
-          }}>
-            {reason ? `${reason} · ` : ""}Sustained high token burn or request flood exceeding safety thresholds. Check active agent loops.
-          </p>
-        </div>
-      </div>
-
-      <span style={{
-        display: "inline-flex",
-        alignItems: "center",
-        gap: 5,
-        fontSize: 10,
-        fontWeight: 700,
-        textTransform: "uppercase",
-        letterSpacing: "0.06em",
-        color: APPLE.red,
-        background: "rgba(255, 69, 58, 0.22)",
-        border: "1px solid rgba(255, 69, 58, 0.45)",
-        borderRadius: 6,
-        padding: "4px 9px",
-        fontFamily: "-apple-system, BlinkMacSystemFont, sans-serif",
-      }}>
-        <span style={{
-          width: 6,
-          height: 6,
-          borderRadius: "50%",
-          background: APPLE.red,
-          boxShadow: `0 0 6px ${APPLE.red}`,
-        }} />
-        SAFETY INTERRUPT
-      </span>
-    </div>
-  );
-}
-
-/* ══════════════════════════════════════════════════════════════════════
-   TOKEN THROUGHPUT & VELOCITY METRIC STRIP
-══════════════════════════════════════════════════════════════════════ */
-function TokenVelocityStrip({ velocity }: { velocity: VelocityMetrics | null }) {
-  const status = velocity?.burn_rate_status ?? "nominal";
-  const statusCfg = {
-    nominal:  { text: "🟢 Nominal",  color: APPLE.mint,   bg: "rgba(48,209,88,0.12)",  border: "rgba(48,209,88,0.30)",  glow: "rgba(48,209,88,0.6)" },
-    elevated: { text: "🟡 Elevated", color: APPLE.orange, bg: "rgba(255,159,10,0.12)", border: "rgba(255,159,10,0.30)", glow: "rgba(255,159,10,0.6)" },
-    runaway:  { text: "🔴 Runaway",  color: APPLE.red,    bg: "rgba(255,69,58,0.16)",  border: "rgba(255,69,58,0.40)",  glow: "rgba(255,69,58,0.7)" },
-  }[status] ?? {
-    text: "🟢 Nominal",
-    color: APPLE.mint,
-    bg: "rgba(48,209,88,0.12)",
-    border: "rgba(48,209,88,0.30)",
-    glow: "rgba(48,209,88,0.6)",
-  };
-
-  const tpsVal = velocity?.tps !== undefined ? Number(velocity.tps).toFixed(1) : "0.0";
-  const tpmVal = velocity?.tpm !== undefined ? fmtMB(Math.round(Number(velocity.tpm))) : "0";
-  const rpmVal = velocity?.rpm !== undefined ? Number(velocity.rpm).toFixed(1) : "0.0";
-
-  return (
-    <div style={{
-      background: "rgba(255,255,255,0.045)",
-      backdropFilter: "blur(20px) saturate(160%)",
-      WebkitBackdropFilter: "blur(20px) saturate(160%)",
-      border: `1px solid ${status === "runaway" ? "rgba(255,69,58,0.45)" : APPLE.separator}`,
-      borderRadius: 16,
-      padding: "16px 20px",
-      marginBottom: 16,
-      display: "flex",
-      flexDirection: "column",
-      gap: 14,
-    }}>
-      {/* Strip Header */}
-      <div style={{
-        display: "flex",
-        justifyContent: "space-between",
-        alignItems: "center",
-        flexWrap: "wrap",
-        gap: 8,
-      }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <span style={{
-            fontSize: 11,
-            fontWeight: 700,
-            letterSpacing: "0.06em",
-            color: APPLE.cyan,
-            textTransform: "uppercase",
-            fontFamily: "-apple-system, BlinkMacSystemFont, sans-serif",
-          }}>
-            Token Throughput &amp; Velocity
-          </span>
-          <span style={{
-            fontSize: 10,
-            fontWeight: 600,
-            color: APPLE.label3,
-            background: "rgba(255,255,255,0.08)",
-            padding: "1px 6px",
-            borderRadius: 6,
-          }}>
-            OmniRoute Proxy
-          </span>
-        </div>
-
-        {/* Live TPS pulse indicator */}
-        <span style={{
-          display: "inline-flex",
-          alignItems: "center",
-          gap: 6,
-          fontSize: 11,
-          fontWeight: 600,
-          color: statusCfg.color,
-          background: statusCfg.bg,
-          border: `1px solid ${statusCfg.border}`,
-          borderRadius: 20,
-          padding: "3px 10px",
-          fontFamily: "-apple-system, BlinkMacSystemFont, sans-serif",
-        }}>
-          <span style={{
-            width: 6,
-            height: 6,
-            borderRadius: "50%",
-            background: statusCfg.color,
-            boxShadow: `0 0 6px 1px ${statusCfg.glow}`,
-            animation: status === "runaway" ? "sentinel-pulse-fast 0.8s ease-in-out infinite" : "sentinel-pulse 2s ease-in-out infinite",
-          }} />
-          {statusCfg.text}
-        </span>
-      </div>
-
-      {/* 3 Metric Columns: Instantaneous TPS, Projected TPM, Rolling RPM */}
-      <div style={{
-        display: "grid",
-        gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
-        gap: 12,
-        padding: "12px 14px",
-        background: "rgba(0,0,0,0.25)",
-        borderRadius: 12,
-        border: "1px solid rgba(255,255,255,0.04)",
-      }}>
-        {/* Instantaneous TPS */}
-        <div>
-          <span style={{
-            fontSize: 10,
-            fontWeight: 600,
-            color: APPLE.label3,
-            textTransform: "uppercase",
-            letterSpacing: "0.04em",
-          }}>
-            Instantaneous TPS
-          </span>
-          <div style={{
-            fontSize: 22,
-            fontWeight: 700,
-            color: status === "runaway" ? APPLE.red : status === "elevated" ? APPLE.orange : APPLE.label,
-            fontVariantNumeric: "tabular-nums",
-            fontFamily: "var(--font-geist-mono), monospace",
-            marginTop: 2,
-          }}>
-            {tpsVal} <span style={{ fontSize: 11, fontWeight: 500, color: APPLE.label3 }}>tokens/sec</span>
-          </div>
-          <span style={{ fontSize: 10, color: APPLE.label3 }}>
-            Live burn rate (ΔTokens/Δt)
-          </span>
-        </div>
-
-        {/* Projected TPM */}
-        <div>
-          <span style={{
-            fontSize: 10,
-            fontWeight: 600,
-            color: APPLE.label3,
-            textTransform: "uppercase",
-            letterSpacing: "0.04em",
-          }}>
-            Projected TPM
-          </span>
-          <div style={{
-            fontSize: 22,
-            fontWeight: 700,
-            color: APPLE.label,
-            fontVariantNumeric: "tabular-nums",
-            fontFamily: "var(--font-geist-mono), monospace",
-            marginTop: 2,
-          }}>
-            {tpmVal} <span style={{ fontSize: 11, fontWeight: 500, color: APPLE.label3 }}>tokens/min</span>
-          </div>
-          <span style={{ fontSize: 10, color: APPLE.label3 }}>
-            Extrapolated 60s window
-          </span>
-        </div>
-
-        {/* Rolling RPM */}
-        <div>
-          <span style={{
-            fontSize: 10,
-            fontWeight: 600,
-            color: APPLE.label3,
-            textTransform: "uppercase",
-            letterSpacing: "0.04em",
-          }}>
-            Rolling RPM
-          </span>
-          <div style={{
-            fontSize: 22,
-            fontWeight: 700,
-            color: APPLE.label,
-            fontVariantNumeric: "tabular-nums",
-            fontFamily: "var(--font-geist-mono), monospace",
-            marginTop: 2,
-          }}>
-            {rpmVal} <span style={{ fontSize: 11, fontWeight: 500, color: APPLE.label3 }}>req/min</span>
-          </div>
-          <span style={{ fontSize: 10, color: APPLE.label3 }}>
-            Active window requests
-          </span>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/* ══════════════════════════════════════════════════════════════════════
-   QUOTA & GATEWAY GRID
-══════════════════════════════════════════════════════════════════════ */
-function QuotaGrid({
-  quotas,
-  loading,
-  onRefresh,
-  engineData,
-  engineLoading,
-  velocity,
-}: {
-  quotas:        QuotaRecord[];
-  loading:       boolean;
-  onRefresh:     () => void;
-  engineData:    EngineData | null;
-  engineLoading: boolean;
-  velocity:      VelocityMetrics | null;
-}) {
-  // Filter out static baseline records (Claude, Codex, Moonshot/Kimi, Manus)
-  const activeQuotas = quotas.filter(
-    (q) => !["claude", "codex", "kimi", "manus"].includes(q.id.toLowerCase())
-  );
-
-  return (
-    <>
-      {/* ⚠️ Prominent Warning Banner if runaway loop detected */}
-      {velocity?.runaway_detected && (
-        <RunawayWarningBanner reason={velocity.reason} />
-      )}
-
-      {/* Section header */}
-      <div style={{
-        display: "flex", alignItems: "center",
-        justifyContent: "space-between", marginBottom: 14,
-      }}>
-        <div>
-          <p style={{
-            margin: 0, fontSize: 13, fontWeight: 600,
-            color: APPLE.label, letterSpacing: "0.01em",
-            fontFamily: "-apple-system, BlinkMacSystemFont, sans-serif",
-          }}>
-            Agent &amp; Gateway Telemetry
-          </p>
-          <p style={{
-            margin: "2px 0 0", fontSize: 11, color: APPLE.label3,
-            fontFamily: "-apple-system, BlinkMacSystemFont, sans-serif",
-          }}>
-            Live token throughput and local provider pool status via OmniRoute (:20128)
-          </p>
-        </div>
-
-        <button onClick={onRefresh} aria-label="Refresh telemetry data"
-          style={{
-            display: "inline-flex", alignItems: "center", gap: 5,
-            padding: "4px 11px", fontSize: 11, fontWeight: 500,
-            color: loading || engineLoading ? APPLE.label3 : APPLE.label2,
-            background: "rgba(255,255,255,0.06)",
-            border: `1px solid ${APPLE.separator}`,
-            borderRadius: 8, cursor: loading || engineLoading ? "default" : "pointer",
-            fontFamily: "-apple-system, BlinkMacSystemFont, sans-serif",
-            userSelect: "none",
-            opacity: loading || engineLoading ? 0.6 : 1,
-            transition: "opacity 0.15s",
-          }}
-        >
-          <IconRefresh
-            color={loading || engineLoading ? APPLE.label4 : APPLE.label3}
-            size={11}
-          />
-          {loading || engineLoading ? "Refreshing…" : "Refresh"}
-        </button>
-      </div>
-
-      {/* Token Throughput & Velocity Metric Strip */}
-      <TokenVelocityStrip velocity={velocity} />
-
-      {/* Local Inference Engine Card or Standby */}
-      {engineData && engineData.status === "active" && engineData.models.length > 0 ? (
-        engineData.models.map((m) => (
-          <LocalEngineCard key={m.name} model={m} engine={engineData.engine} />
-        ))
-      ) : (
-        <LocalEngineStandby />
-      )}
-
-      {/* Verified Gateway Provider Pools Card grid */}
-      {loading && activeQuotas.length === 0 ? (
-        <div style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))",
-          gap: 12,
-        }}>
-          {Array.from({ length: 3 }).map((_, i) => (
-            <div key={i} style={{
-              height: 160, borderRadius: 16,
-              background: "rgba(255,255,255,0.03)",
-              border: `1px solid ${APPLE.separator}`,
-              animation: `sentinel-pulse 1.4s ease-in-out ${i * 0.1}s infinite`,
-            }} />
-          ))}
-        </div>
-      ) : (
-        <div style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))",
-          gap: 12,
-          paddingBottom: 8,
-        }}>
-          {activeQuotas.map((q) => (
-            <QuotaCard key={q.id} record={q} />
-          ))}
-        </div>
-      )}
-    </>
-  );
-}
-
-/* ══════════════════════════════════════════════════════════════════════
-   OVERVIEW GRID
-══════════════════════════════════════════════════════════════════════ */
-function OverviewGrid({ latest, history, histLoading, spikes, timeWindow, onTimeWindowChange }: {
-  latest:             TelemetryFrame | null;
-  history:            ChartPoint[];
-  histLoading:        boolean;
-  spikes:             SpikeRecord[];
-  timeWindow:         TimeWindow;
-  onTimeWindowChange: (w: TimeWindow) => void;
-}) {
-  const tIdx   = latest?.thrash_index ?? 0;
-  const tColor = latest ? thrashColor(tIdx) : APPLE.label4;
-  const swapPct = latest && latest.swap_total_mb > 0
-    ? ((latest.swap_used_mb / latest.swap_total_mb) * 100).toFixed(1) : "—";
-
-  const windowToolbar = (
-    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-      <TimeWindowPicker active={timeWindow} onChange={onTimeWindowChange} />
-    </div>
-  );
-
-  return (
-    <div className="overview-layout">
-      <div className="stat-row">
-        <StatCard label="VRAM Wired" accent={APPLE.blue}>
-          {latest
-            ? <VramGauge wired_mb={latest.wired_mb} limit_mb={latest.limit_mb} />
-            : <span className="stat-placeholder">Loading…</span>}
-        </StatCard>
-        <StatCard label="Thrash Danger Index" accent={tColor}>
-          {latest
-            ? <ThrashMeter index={tIdx} />
-            : <span className="stat-placeholder">Loading…</span>}
-        </StatCard>
-        <StatCard label="Swap Committed" accent={APPLE.cyan}>
-          <div className="stat-value" style={{ color: APPLE.cyan, fontVariantNumeric: "tabular-nums" }}>
-            {latest ? `${fmtMB(Math.round(latest.swap_used_mb))} MB` : "—"}
-          </div>
-          <div className="stat-sub">
-            {latest ? `${swapPct}% of ${fmtMB(Math.round(latest.swap_total_mb))} MB` : "Loading…"}
-          </div>
-        </StatCard>
-        <StatCard label="Cumulative Pageouts" accent={APPLE.orange}>
-          <div className="stat-value" style={{ color: APPLE.orange, fontVariantNumeric: "tabular-nums" }}>
-            {latest ? fmtMB(latest.pageouts) : "—"}
-          </div>
-          <div className="stat-sub">since boot</div>
-        </StatCard>
-      </div>
-
-      <div className="chart-grid">
-        <ChartCard title="VRAM Wired — MB" toolbar={windowToolbar}>
-          <MiniChart data={history} dataKey="wired_mb" color={APPLE.blue} unit="MB" spikeMarkers={spikes} loading={histLoading} />
-        </ChartCard>
-        <ChartCard title="Swap Used — MB">
-          <MiniChart data={history} dataKey="swap_used_mb" color={APPLE.cyan} unit="MB" spikeMarkers={spikes} loading={histLoading} />
-        </ChartCard>
-        <ChartCard title="Pageouts — cumulative">
-          <MiniChart data={history} dataKey="pageouts" color={APPLE.orange} unit="" spikeMarkers={spikes} loading={histLoading} />
-        </ChartCard>
-        <ChartCard title="Thrash Danger Index — 0–1">
-          <MiniChart data={history} dataKey="thrash_index" color={tColor} unit="" domain={[0, 1]} spikeMarkers={spikes} loading={histLoading} />
-        </ChartCard>
-      </div>
-    </div>
-  );
-}
-
-/* ══════════════════════════════════════════════════════════════════════
-   FOCUS VIEW
-══════════════════════════════════════════════════════════════════════ */
-function FocusView({ title, latest, history, histLoading, dataKey, color, unit,
-  valueFn, subFn, domain, gauge, spikes, timeWindow, onTimeWindowChange }: {
-  title:               string;
-  latest:              TelemetryFrame | null;
-  history:             ChartPoint[];
-  histLoading?:        boolean;
-  dataKey:             keyof ChartPoint;
-  color:               string;
-  unit:                string;
-  valueFn:             (f: TelemetryFrame) => string;
-  subFn:               (f: TelemetryFrame) => string;
-  domain?:             [number | string, number | string];
-  gauge?:              React.ReactNode;
-  spikes?:             SpikeRecord[];
-  timeWindow?:         TimeWindow;
-  onTimeWindowChange?: (w: TimeWindow) => void;
-}) {
-  return (
-    <div className="focus-layout">
-      <div className="stat-card focus-hero">
-        <span className="stat-label" style={{ color }}>{title}</span>
-        <div className="stat-body">
-          <div className="stat-value" style={{ color, fontVariantNumeric: "tabular-nums" }}>
-            {latest ? valueFn(latest) : "—"}
-          </div>
-          <div className="stat-sub">{latest ? subFn(latest) : "Loading…"}</div>
-          {gauge && <div style={{ marginTop: 16 }}>{gauge}</div>}
-        </div>
-      </div>
-      <ChartCard
-        title={`${title} — ${timeWindow ?? "1m"} window`}
-        toolbar={timeWindow && onTimeWindowChange
-          ? <TimeWindowPicker active={timeWindow} onChange={onTimeWindowChange} />
-          : undefined}
-      >
-        <MiniChart data={history} dataKey={dataKey} color={color} unit={unit}
-          domain={domain} spikeMarkers={spikes} loading={histLoading} />
-      </ChartCard>
-    </div>
-  );
-}
-
-/* ══════════════════════════════════════════════════════════════════════
-   HOOK — historical data
-══════════════════════════════════════════════════════════════════════ */
-function useHistoryData(window: TimeWindow) {
-  const [data, setData]       = useState<ChartPoint[]>([]);
-  const [loading, setLoading] = useState(false);
-  const timerRef              = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  const fetch_ = useCallback(async () => {
-    if (window === "1m") return;
-    setLoading(true);
-    try {
-      const res = await fetch(`${API_BASE}/api/history?window=${window}`);
-      if (res.ok) {
-        const rows: Record<string, number>[] = await res.json();
-        setData(rows.map(historyRowToChartPoint));
-      }
-    } catch { /* keep stale */ }
-    finally { setLoading(false); }
-  }, [window]);
-
-  useEffect(() => {
-    if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
-    if (window === "1m") { setData([]); setLoading(false); return; }
-    setData([]);
-    fetch_();
-    const interval = HISTORY_POLL_MS[window];
-    if (interval > 0) timerRef.current = setInterval(fetch_, interval);
-    return () => { if (timerRef.current) clearInterval(timerRef.current); };
-  }, [window, fetch_]);
-
-  return { data, loading, refresh: fetch_ };
-}
-
-/* ══════════════════════════════════════════════════════════════════════
-   HOOK — spikes
-══════════════════════════════════════════════════════════════════════ */
-function useSpikes() {
-  const [spikes, setSpikes] = useState<SpikeRecord[]>([]);
-  const timerRef            = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  const fetch_ = useCallback(async () => {
-    try {
-      const res = await fetch(`${API_BASE}/api/spikes`);
-      if (res.ok) { const data: SpikeRecord[] = await res.json(); setSpikes(data); }
-    } catch { /* silent */ }
-  }, []);
-
-  useEffect(() => {
-    fetch_();
-    timerRef.current = setInterval(fetch_, 60_000);
-    return () => { if (timerRef.current) clearInterval(timerRef.current); };
-  }, [fetch_]);
-
-  return spikes;
-}
-
-/* ══════════════════════════════════════════════════════════════════════
-   HOOK — quotas
-   Fetches immediately on mount regardless of which tab is active,
-   so data is ready the moment the user switches to Agent Quotas.
-   Polling continues only while the quotas tab is visible.
-══════════════════════════════════════════════════════════════════════ */
-function useQuotas(activeTab: TopLevelTab) {
-  const [quotas,  setQuotas]  = useState<QuotaRecord[]>([]);
-  const [loading, setLoading] = useState(false);
-  const timerRef              = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  const fetch_ = useCallback(async () => {
-    setLoading(true);
-    try {
-      const res = await fetch(`${API_BASE}/api/quotas`);
-      if (res.ok) {
-        const data: QuotaRecord[] = await res.json();
-        // Defensive: ensure we always get an array
-        if (Array.isArray(data) && data.length > 0) {
-          setQuotas(data);
-        }
-      }
-    } catch { /* keep stale */ }
-    finally { setLoading(false); }
-  }, []);
-
-  // Initial fetch — fires once on mount regardless of active tab
-  useEffect(() => {
-    fetch_();
-  }, [fetch_]);
-
-  // Polling — only while quotas tab is visible
-  useEffect(() => {
-    if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
-    if (activeTab !== "quotas") return;
-    timerRef.current = setInterval(fetch_, 30_000);
-    return () => { if (timerRef.current) clearInterval(timerRef.current); };
-  }, [activeTab, fetch_]);
-
-  return { quotas, loading, refresh: fetch_ };
-}
-
-/* ══════════════════════════════════════════════════════════════════════
-   HOOK — local engines & KV cache
-   Polls /api/engines for Ollama / LM Studio active models and KV telemetry.
-══════════════════════════════════════════════════════════════════════ */
-function useEngines(activeTab: TopLevelTab) {
-  const [engineData, setEngineData] = useState<EngineData | null>(null);
-  const [loading,    setLoading]    = useState(false);
-  const timerRef                    = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  const fetch_ = useCallback(async () => {
-    setLoading(true);
-    try {
-      const res = await fetch(`${API_BASE}/api/engines`);
-      if (res.ok) {
-        const data: EngineData = await res.json();
-        setEngineData(data);
-      }
-    } catch { /* keep stale */ }
-    finally { setLoading(false); }
-  }, []);
-
-  useEffect(() => {
-    fetch_();
-  }, [fetch_]);
-
-  useEffect(() => {
-    if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
-    if (activeTab !== "quotas") return;
-    timerRef.current = setInterval(fetch_, 15_000);
-    return () => { if (timerRef.current) clearInterval(timerRef.current); };
-  }, [activeTab, fetch_]);
-
-  return { engineData, loading, refresh: fetch_ };
-}
-
-/* ══════════════════════════════════════════════════════════════════════
-   HOOK — token velocity & runaway detection
-   Syncs live from WebSocket telemetry frame or polls /api/velocity.
-══════════════════════════════════════════════════════════════════════ */
-function useVelocity(activeTab: TopLevelTab, wsVelocity?: VelocityMetrics | null) {
-  const [velocity, setVelocity] = useState<VelocityMetrics | null>(wsVelocity ?? null);
-  const timerRef                = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  // Sync when WebSocket telemetry provides an updated velocity payload
-  useEffect(() => {
-    if (wsVelocity) {
-      setVelocity(wsVelocity);
-    }
-  }, [wsVelocity]);
-
-  const fetch_ = useCallback(async () => {
-    try {
-      const res = await fetch(`${API_BASE}/api/velocity`);
-      if (res.ok) {
-        const data: VelocityMetrics = await res.json();
-        setVelocity(data);
-      }
-    } catch { /* keep stale */ }
-  }, []);
-
-  // Initial fetch on mount
-  useEffect(() => {
-    fetch_();
-  }, [fetch_]);
-
-  // Polling fallback while quotas tab is active
-  useEffect(() => {
-    if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
-    if (activeTab !== "quotas") return;
-    timerRef.current = setInterval(fetch_, 5_000);
-    return () => { if (timerRef.current) clearInterval(timerRef.current); };
-  }, [activeTab, fetch_]);
-
-  return { velocity, refresh: fetch_ };
-}
-
-/* ══════════════════════════════════════════════════════════════════════
-   MAIN DASHBOARD
+   MAIN APPLICATION COMPONENT
 ══════════════════════════════════════════════════════════════════════ */
 export default function Home() {
   const [liveHistory, setLiveHistory] = useState<ChartPoint[]>([]);
-  const [latest,      setLatest]      = useState<TelemetryFrame | null>(null);
-  const [status,      setStatus]      = useState<ConnectionStatus>("connecting");
-  const [topTab,      setTopTab]      = useState<TopLevelTab>("telemetry");
-  const [view,        setView]        = useState<ActiveView>("overview");
-  const [timeWindow,  setTimeWindow]  = useState<TimeWindow>("1m");
-  const [highlightedSpike, setHighlightedSpike] = useState<SpikeRecord | null>(null);
+  const [latest, setLatest] = useState<TelemetryFrame | null>(null);
+  const [status, setStatus] = useState<ConnectionStatus>("disconnected");
+  const [isPaused, setIsPaused] = useState<boolean>(false);
+  const [activeTab, setActiveTab] = useState<DashboardTab>("telemetry");
+  const [timeWindow, setTimeWindow] = useState<TimeWindow>("1m");
+  const [historyData, setHistoryData] = useState<ChartPoint[]>([]);
+  const [quotas, setQuotas] = useState<QuotaRecord[]>([]);
+  const [engines, setEngines] = useState<EngineData | null>(null);
+  const [spikes, setSpikes] = useState<SpikeRecord[]>([]);
+  const [config, setConfig] = useState<ConfigData | null>(null);
+  const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
 
-  const wsRef         = useRef<WebSocket | null>(null);
-  const retryRef      = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const wsRef = useRef<WebSocket | null>(null);
+  const retryRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const retryDelayRef = useRef(BASE_RETRY_MS);
-  const mountedRef    = useRef(true);
+  const isPausedRef = useRef(isPaused);
+  isPausedRef.current = isPaused;
 
-  const { data: histData, loading: histLoading } = useHistoryData(timeWindow);
-  const spikes = useSpikes();
-  const { quotas, loading: quotasLoading, refresh: refreshQuotas } = useQuotas(topTab);
-  const { engineData, loading: engineLoading, refresh: refreshEngines } = useEngines(topTab);
-  const { velocity, refresh: refreshVelocity } = useVelocity(topTab, latest?.velocity);
+  /* ── REST Data Fetching ── */
+  const fetchREST = useCallback(async () => {
+    setIsRefreshing(true);
+    try {
+      const [qRes, eRes, sRes, cRes] = await Promise.all([
+        fetch(`${API_BASE}/api/quotas`).then((r) => r.json()).catch(() => []),
+        fetch(`${API_BASE}/api/engines`).then((r) => r.json()).catch(() => null),
+        fetch(`${API_BASE}/api/spikes`).then((r) => r.json()).catch(() => []),
+        fetch(`${API_BASE}/api/config`).then((r) => r.json()).catch(() => null),
+      ]);
 
-  const handleRefreshQuotas = useCallback(() => {
-    refreshQuotas();
-    refreshEngines();
-    refreshVelocity();
-  }, [refreshQuotas, refreshEngines, refreshVelocity]);
+      if (Array.isArray(qRes)) setQuotas(qRes);
+      if (eRes) setEngines(eRes);
+      if (Array.isArray(sRes)) setSpikes(sRes);
+      if (cRes) setConfig(cRes);
+    } catch {
+      // ignore transient fetch errors
+    } finally {
+      setTimeout(() => setIsRefreshing(false), 400);
+    }
+  }, []);
 
-  const displayHistory = timeWindow === "1m" ? liveHistory : histData;
+  const fetchHistory = useCallback(async (win: TimeWindow) => {
+    if (win === "1m") return;
+    try {
+      const res = await fetch(`${API_BASE}/api/history?window=${win}`);
+      const data = await res.json();
+      if (Array.isArray(data)) {
+        setHistoryData(
+          data.map((item: any) => ({
+            t: fmtTime(item.timestamp || item.bucket_ts || 0),
+            ts: item.timestamp || item.bucket_ts || 0,
+            wired_mb: item.avg_wired_mb ?? item.wired_mb ?? 0,
+            swap_used_mb: item.avg_swap_used_mb ?? item.swap_used_mb ?? 0,
+            pageouts: item.max_pageouts ?? item.pageouts ?? 0,
+            thrash_index: item.max_thrash_index ?? item.thrash_index ?? 0,
+            tps: 0,
+            rpm: 0,
+          }))
+        );
+      }
+    } catch {
+      // skip
+    }
+  }, []);
 
-  /* ── WebSocket ── */
+  useEffect(() => {
+    fetchREST();
+    const timer = setInterval(fetchREST, 15000);
+    return () => clearInterval(timer);
+  }, [fetchREST]);
+
+  useEffect(() => {
+    fetchHistory(timeWindow);
+  }, [timeWindow, fetchHistory]);
+
+  /* ── WebSocket Telemetry Stream ── */
   const connect = useCallback(() => {
-    if (!mountedRef.current) return;
-    setStatus((s) => (s === "connected" ? "reconnecting" : s));
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) return;
 
+    setStatus((s) => (s === "connected" ? "reconnecting" : s));
     const ws = new WebSocket(WS_URL);
     wsRef.current = ws;
 
     ws.onopen = () => {
-      if (!mountedRef.current) return;
       retryDelayRef.current = BASE_RETRY_MS;
       setStatus("connected");
     };
 
     ws.onmessage = (evt: MessageEvent<string>) => {
-      if (!mountedRef.current) return;
+      if (isPausedRef.current) return;
       try {
         const frame: TelemetryFrame = JSON.parse(evt.data);
         setLatest(frame);
         setLiveHistory((prev) => {
-          const next = [...prev, toChartPoint(frame)];
-          return next.length > MAX_POINTS ? next.slice(-MAX_POINTS) : next;
+          const pt = toChartPoint(frame);
+          const next = [...prev, pt];
+          return next.length > MAX_LIVE_POINTS ? next.slice(-MAX_LIVE_POINTS) : next;
         });
-      } catch { /* skip malformed */ }
+      } catch {
+        // skip malformed
+      }
     };
 
     ws.onclose = () => {
-      if (!mountedRef.current) return;
       setStatus("reconnecting");
       const delay = Math.min(retryDelayRef.current, MAX_RETRY_MS);
       retryDelayRef.current = Math.min(delay * 2, MAX_RETRY_MS);
       retryRef.current = setTimeout(connect, delay);
     };
 
-    ws.onerror = () => { setStatus("error"); ws.close(); };
+    ws.onerror = () => {
+      setStatus("disconnected");
+      ws.close();
+    };
   }, []);
 
   useEffect(() => {
-    mountedRef.current = true;
     connect();
     return () => {
-      mountedRef.current = false;
       wsRef.current?.close();
       if (retryRef.current) clearTimeout(retryRef.current);
     };
   }, [connect]);
 
-  /* ── Spike selection ── */
-  function handleSpikeSelect(s: SpikeRecord) {
-    setHighlightedSpike(s);
-    setTopTab("telemetry");
-    const age = Date.now() / 1000 - s.timestamp;
-    if (age <= 60)        setTimeWindow("1m");
-    else if (age <= 300)  setTimeWindow("5m");
-    else                  setTimeWindow("1h");
-  }
+  /* ── Derived Metrics ── */
+  const tdi = latest?.thrash_index ?? 0;
+  const wiredMB = latest?.wired_mb ?? 0;
+  const limitMB = latest?.limit_mb ?? 18432;
+  const swapUsedMB = latest?.swap_used_mb ?? 0;
+  const pageouts = latest?.pageouts ?? 0;
+  const velocity = latest?.velocity;
+  const isRunaway = velocity?.runaway_detected ?? false;
 
-  const tIdx   = latest?.thrash_index ?? 0;
-  const tColor = latest ? thrashColor(tIdx) : APPLE.label4;
+  // Dynamic swap limit: max(2048 MB, RAM * 0.25)
+  const swapRatio = config?.swap_limit_ratio ?? 0.25;
+  const approxRAM = limitMB / 0.75; // Apple dynamic limit is 75% RAM
+  const dynamicSwapCeilingMB = Math.max(2048, Math.round(approxRAM * swapRatio));
 
-  const spikeMarkers: SpikeRecord[] =
-    highlightedSpike && !spikes.find((s) => s.timestamp === highlightedSpike.timestamp)
-      ? [highlightedSpike, ...spikes]
-      : spikes;
+  // TDI Breakdown weights: 70% physical, 30% swap
+  const physicalRatio = limitMB > 0 ? wiredMB / limitMB : 0;
+  const physicalTDIContribution = 0.70 * physicalRatio;
+  const swapSubsystemRatio = dynamicSwapCeilingMB > 0 ? swapUsedMB / dynamicSwapCeilingMB : 0;
+  const swapTDIContribution = 0.30 * swapSubsystemRatio;
 
-  const pulseKeyframes = `
-    @keyframes sentinel-pulse {
-      0%, 80%, 100% { opacity: 0.2; transform: scale(0.85); }
-      40%           { opacity: 1;   transform: scale(1);    }
-    }
-    @keyframes sentinel-pulse-fast {
-      0%, 100% { opacity: 0.3; transform: scale(0.88); }
-      50%      { opacity: 1;   transform: scale(1.12); }
-    }
-    @keyframes sentinel-warning-glow {
-      0%, 100% { box-shadow: 0 0 16px rgba(255, 69, 58, 0.15); border-color: rgba(255, 69, 58, 0.45); }
-      50%      { box-shadow: 0 0 28px rgba(255, 69, 58, 0.35); border-color: rgba(255, 69, 58, 0.85); }
-    }
-  `;
+  const currentChartData = timeWindow === "1m" ? liveHistory : historyData;
 
   return (
-    <div className={geistMono.variable} style={{
-      minHeight: "100dvh", background: "#0d0d0f",
-      fontFamily: `-apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Helvetica Neue", Arial, sans-serif`,
-    }}>
-      <style>{pulseKeyframes}</style>
+    <div className="min-h-screen bg-[#09090b] text-zinc-100 flex flex-col font-sans selection:bg-cyan-500/30 selection:text-cyan-200">
+      <Head>
+        <title>Sentinel-AI — Unified Memory & Velocity Telemetry</title>
+        <meta name="description" content="Zero-overhead unified memory telemetry and runaway agent loop tripwire for Apple Silicon." />
+        <link rel="icon" href="/favicon.ico" />
+      </Head>
 
-      <div aria-hidden="true" className="ambient-layer">
-        <div className="glow glow-blue"  />
-        <div className="glow glow-green" />
-      </div>
+      {/* Ambient Raycast Lighting */}
+      <div className="ambient-glow" aria-hidden="true" />
 
-      <div className="page-wrapper">
-        <div className="mac-window">
+      {/* Main Container */}
+      <div className="relative z-10 w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
 
-          {/* Title bar */}
-          <header className="mac-titlebar">
-            <TrafficLights />
-            <div className="window-title-center">
-              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
-                <circle cx="7" cy="7" r="6.25" stroke={APPLE.blue} strokeWidth="1.5" />
-                <circle cx="7" cy="7" r="3"    fill={APPLE.blue}   fillOpacity={0.7} />
-              </svg>
-              <span className="window-title-text">Sentinel-AI</span>
+        {/* ══════════════════════════════════════════════════════════════════
+           HEADER BAR
+        ══════════════════════════════════════════════════════════════════ */}
+        <header className="telemetry-card px-5 py-3.5 flex flex-wrap items-center justify-between gap-4">
+          {/* Brand & Version */}
+          <div className="flex items-center gap-3">
+            <div className="flex items-center justify-center w-8 h-8 rounded-lg bg-zinc-800/80 border border-zinc-700/60 shadow-inner">
+              <Shield className="w-4 h-4 text-cyan-400" />
             </div>
-            <div className="window-title-right">
-              <StatusBadge status={status} />
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="font-semibold text-sm tracking-tight text-zinc-100">
+                  Sentinel-AI
+                </span>
+                <span className="font-mono text-[10px] px-1.5 py-0.5 rounded-full bg-zinc-800/90 text-zinc-400 border border-zinc-700/60">
+                  v1.0.0
+                </span>
+              </div>
+              <p className="text-[11px] text-zinc-500">
+                Unified Memory &amp; Agent Loop Tripwire
+              </p>
             </div>
-          </header>
-
-          {/* Top-level tab bar */}
-          <div style={{
-            display: "flex", justifyContent: "center",
-            padding: "8px 20px 10px",
-            borderBottom: `1px solid ${APPLE.separator}`,
-          }}>
-            <TopTabBar active={topTab} onChange={setTopTab} />
           </div>
 
-          {/* ── SYSTEM TELEMETRY ── */}
-          {topTab === "telemetry" && (
-            <>
-              <div className="unified-toolbar" style={{
-                display: "flex", alignItems: "center", justifyContent: "space-between",
-              }}>
-                <SegmentedControl active={view} onChange={setView} />
-                <SpikesInspector spikes={spikes} onSelect={handleSpikeSelect} />
-              </div>
+          {/* Center Badges: Connection & Hardware */}
+          <div className="flex items-center flex-wrap gap-2 text-xs">
+            {/* Live Connection Pill */}
+            <div className={`inline-flex items-center gap-2 px-2.5 py-1 rounded-full font-mono text-[11px] border transition-colors ${
+              status === "connected"
+                ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-400"
+                : status === "reconnecting"
+                ? "bg-amber-500/10 border-amber-500/30 text-amber-400"
+                : "bg-rose-500/10 border-rose-500/30 text-rose-400"
+            }`}>
+              <span className="relative flex h-2 w-2">
+                {status === "connected" && !isPaused && (
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+                )}
+                <span className={`relative inline-flex rounded-full h-2 w-2 ${
+                  status === "connected" ? "bg-emerald-500" : status === "reconnecting" ? "bg-amber-500" : "bg-rose-500"
+                }`} />
+              </span>
+              <span>
+                {status === "connected" ? (isPaused ? "STREAM PAUSED" : "LIVE 1Hz") : status.toUpperCase()}
+              </span>
+            </div>
 
-              <main className="window-content">
-                {view === "overview" && (
-                  <OverviewGrid latest={latest} history={displayHistory} histLoading={histLoading}
-                    spikes={spikeMarkers} timeWindow={timeWindow} onTimeWindowChange={setTimeWindow} />
-                )}
-                {view === "memory" && (
-                  <FocusView title="VRAM Wired" latest={latest} history={displayHistory} histLoading={histLoading}
-                    dataKey="wired_mb" color={APPLE.blue} unit="MB"
-                    valueFn={(f) => `${fmtMB(Math.round(f.wired_mb))} MB`}
-                    subFn={(f) => f.limit_mb > 0
-                      ? `${((f.wired_mb / f.limit_mb) * 100).toFixed(1)}% of ${fmtMB(f.limit_mb)} MB budget`
-                      : "—"}
-                    gauge={latest ? <VramGauge wired_mb={latest.wired_mb} limit_mb={latest.limit_mb} /> : undefined}
-                    spikes={spikeMarkers} timeWindow={timeWindow} onTimeWindowChange={setTimeWindow}
-                  />
-                )}
-                {view === "swap" && (
-                  <FocusView title="Swap Committed" latest={latest} history={displayHistory} histLoading={histLoading}
-                    dataKey="swap_used_mb" color={APPLE.cyan} unit="MB"
-                    valueFn={(f) => `${fmtMB(Math.round(f.swap_used_mb))} MB`}
-                    subFn={(f) => f.swap_total_mb > 0
-                      ? `${((f.swap_used_mb / f.swap_total_mb) * 100).toFixed(1)}% of ${fmtMB(Math.round(f.swap_total_mb))} MB`
-                      : "—"}
-                    spikes={spikeMarkers} timeWindow={timeWindow} onTimeWindowChange={setTimeWindow}
-                  />
-                )}
-                {view === "pressure" && (
-                  <div className="focus-layout">
-                    <FocusView title="Thrash Danger Index" latest={latest} history={displayHistory} histLoading={histLoading}
-                      dataKey="thrash_index" color={tColor} unit=""
-                      valueFn={(f) => f.thrash_index.toFixed(3)}
-                      subFn={(f) => thrashLabel(f.thrash_index)}
-                      domain={[0, 1]}
-                      gauge={latest ? <ThrashMeter index={tIdx} /> : undefined}
-                      spikes={spikeMarkers} timeWindow={timeWindow} onTimeWindowChange={setTimeWindow}
-                    />
-                    <FocusView title="Pageouts" latest={latest} history={displayHistory} histLoading={histLoading}
-                      dataKey="pageouts" color={APPLE.orange} unit=""
-                      valueFn={(f) => fmtMB(f.pageouts)}
-                      subFn={() => "cumulative since boot"}
-                      spikes={spikeMarkers}
-                    />
-                  </div>
-                )}
-              </main>
-            </>
-          )}
+            {/* Apple Silicon Hardware Banner */}
+            <div className="inline-flex items-center gap-2 px-2.5 py-1 rounded-full font-mono text-[11px] bg-zinc-800/60 border border-zinc-700/50 text-zinc-300">
+              <Cpu className="w-3.5 h-3.5 text-indigo-400" />
+              <span>Apple Silicon</span>
+              <span className="text-zinc-500">|</span>
+              <span className="text-zinc-400">Ceiling:</span>
+              <span className="text-zinc-200 tabular-nums">{fmtMB(dynamicSwapCeilingMB)}</span>
+            </div>
+          </div>
 
-          {/* ── AGENT & GATEWAY TELEMETRY ── */}
-          {topTab === "quotas" && (
-            <main className="window-content">
-              <QuotaGrid
-                quotas={quotas}
-                loading={quotasLoading}
-                engineData={engineData}
-                engineLoading={engineLoading}
-                velocity={velocity ?? latest?.velocity ?? null}
-                onRefresh={handleRefreshQuotas}
-              />
-            </main>
-          )}
+          {/* Quick Action Controls */}
+          <div className="flex items-center gap-1.5">
+            <button
+              onClick={() => setIsPaused((p) => !p)}
+              className={`p-2 rounded-lg border text-xs font-mono transition-all flex items-center gap-1.5 ${
+                isPaused
+                  ? "bg-amber-500/10 border-amber-500/40 text-amber-300"
+                  : "bg-zinc-800/60 border-zinc-700/60 text-zinc-300 hover:text-zinc-100 hover:border-zinc-600"
+              }`}
+              title={isPaused ? "Resume telemetry stream" : "Pause live stream"}
+            >
+              {isPaused ? <Play className="w-3.5 h-3.5" /> : <Pause className="w-3.5 h-3.5" />}
+              <span className="hidden sm:inline">{isPaused ? "Resume" : "Pause"}</span>
+            </button>
+
+            <button
+              onClick={fetchREST}
+              className="p-2 rounded-lg bg-zinc-800/60 border border-zinc-700/60 text-zinc-300 hover:text-zinc-100 hover:border-zinc-600 transition-all"
+              title="Refresh quota & engine snapshots"
+            >
+              <RotateCw className={`w-3.5 h-3.5 ${isRefreshing ? "animate-spin text-cyan-400" : ""}`} />
+            </button>
+          </div>
+        </header>
+
+        {/* ══════════════════════════════════════════════════════════════════
+           NAVIGATION TABS
+        ══════════════════════════════════════════════════════════════════ */}
+        <div className="flex items-center gap-2 border-b border-zinc-800/80 pb-2 text-xs font-mono">
+          {[
+            { id: "telemetry", label: "Telemetry & Tripwires", icon: Activity },
+            { id: "quotas", label: "AI Quota Radar", icon: Zap, count: quotas.length },
+            { id: "engines", label: "Local LLM Engines", icon: Server },
+            { id: "spikes", label: "Spike Incidents", icon: AlertTriangle, count: spikes.length },
+            { id: "config", label: "Config & Rules", icon: Sliders },
+          ].map((tab) => {
+            const Icon = tab.icon;
+            const isActive = activeTab === tab.id;
+            return (
+              <button
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id as DashboardTab)}
+                className={`flex items-center gap-2 px-3 py-1.5 rounded-lg transition-all ${
+                  isActive
+                    ? "bg-zinc-800 text-zinc-100 border border-zinc-700/80 shadow-sm"
+                    : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900/60"
+                }`}
+              >
+                <Icon className="w-3.5 h-3.5" />
+                <span>{tab.label}</span>
+                {tab.count !== undefined && tab.count > 0 && (
+                  <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-zinc-700/60 text-zinc-300">
+                    {tab.count}
+                  </span>
+                )}
+              </button>
+            );
+          })}
         </div>
 
-        <footer className="page-footer">
-          {topTab === "telemetry" ? (
-            <>
-              Sentinel-AI · macOS sysctl &amp; vm_stat ·{" "}
-              {timeWindow === "1m" ? `${MAX_POINTS}s rolling window`
-                : timeWindow === "5m" ? "5 min history" : "1 hour history"}
-            </>
-          ) : (
-            <>Sentinel-AI · Agent &amp; Gateway Telemetry · OmniRoute {OMNIROUTE_BASE}</>
-          )}
+        {/* ══════════════════════════════════════════════════════════════════
+           TAB 1: TELEMETRY & TRIPWIRES (PRIMARY HIGH-DENSITY VIEW)
+        ══════════════════════════════════════════════════════════════════ */}
+        {activeTab === "telemetry" && (
+          <div className="space-y-6">
+
+            {/* Runaway Tripwire Flashing Banner (if triggered) */}
+            {isRunaway && (
+              <div className="telemetry-card p-4 border-rose-500/80 bg-rose-950/30 animate-runaway-alert flex items-start gap-3.5">
+                <ShieldAlert className="w-5 h-5 text-rose-400 shrink-0 mt-0.5" />
+                <div className="flex-1">
+                  <div className="flex items-center gap-2 font-mono font-bold text-sm text-rose-300">
+                    <span>TRIPWIRE ENGAGED: RECURSIVE AGENT RUNAWAY DETECTED</span>
+                    <span className="text-xs px-2 py-0.5 rounded bg-rose-500/20 text-rose-300 border border-rose-500/30">
+                      BURN RATE EXCEEDED
+                    </span>
+                  </div>
+                  <p className="text-xs text-rose-200/80 mt-1 font-mono">
+                    {velocity?.reason || "High sustained token velocity or 0-backoff request flood exceeding tripwire threshold."}
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {/* HERO SECTION: Thrash Danger Index (TDI) Radial Gauge & Decomposition */}
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+
+              {/* Left Column: Radial Meter */}
+              <div className="telemetry-card lg:col-span-5 flex flex-col justify-between p-5">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Activity className="w-4 h-4 text-emerald-400" />
+                    <span className="text-xs font-mono uppercase tracking-wider text-zinc-300 font-semibold">
+                      Thrash Danger Index (TDI)
+                    </span>
+                  </div>
+                  <div className="group relative">
+                    <Info className="w-3.5 h-3.5 text-zinc-500 hover:text-zinc-300 cursor-help" />
+                    <div className="hidden group-hover:block absolute right-0 top-6 z-50 w-72 p-3 text-[11px] font-mono rounded-lg bg-zinc-900 border border-zinc-700 shadow-2xl text-zinc-300">
+                      <div className="font-bold text-zinc-100 mb-1">TDI Mathematical Formulation:</div>
+                      <div>TDI = 0.70 × (Wired / Limit) + 0.30 × (Swap / SwapCeiling)</div>
+                      <div className="text-zinc-400 mt-1.5">
+                        Swap Ceiling dynamically scales as max(2048 MB, hw.memsize × 0.25).
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* SVG Radial Gauge */}
+                <TDIRadialGauge tdi={tdi} />
+
+                {/* Gauge Footnote */}
+                <div className="text-[11px] font-mono text-zinc-500 text-center border-t border-zinc-800/80 pt-3 flex items-center justify-center gap-4">
+                  <span>Warning: &gt; 0.75</span>
+                  <span>•</span>
+                  <span>Critical: &gt; 0.90</span>
+                </div>
+              </div>
+
+              {/* Right Column: Mathematical Decomposition Breakdown */}
+              <div className="telemetry-card lg:col-span-7 flex flex-col justify-between p-5 space-y-4">
+                <div>
+                  <h3 className="text-xs font-mono uppercase tracking-wider text-zinc-300 font-semibold mb-1">
+                    Telemetry Decomposition &amp; Weight Attribution
+                  </h3>
+                  <p className="text-xs text-zinc-500 font-mono">
+                    Linear blend of Darwin Mach kernel wired VRAM allocations and swap subsystem thrash pressure.
+                  </p>
+                </div>
+
+                <div className="space-y-4">
+                  {/* Physical Pressure (70% Weight) */}
+                  <div className="p-3 rounded-lg bg-zinc-800/40 border border-zinc-800 space-y-2">
+                    <div className="flex items-center justify-between text-xs font-mono">
+                      <div className="flex items-center gap-2">
+                        <span className="w-2 h-2 rounded-full bg-cyan-400" />
+                        <span className="text-zinc-300 font-medium">Physical Wired VRAM Pressure</span>
+                        <span className="text-zinc-500 text-[10px]">(70% Weight)</span>
+                      </div>
+                      <span className="text-cyan-400 font-bold tabular-nums">
+                        +{(physicalTDIContribution).toFixed(3)} TDI
+                      </span>
+                    </div>
+
+                    <div className="w-full h-2 rounded-full bg-zinc-800 overflow-hidden">
+                      <div
+                        className="h-full bg-gradient-to-r from-cyan-500 to-blue-500 rounded-full transition-all duration-300"
+                        style={{ width: `${Math.min(100, physicalRatio * 100)}%` }}
+                      />
+                    </div>
+
+                    <div className="flex justify-between text-[11px] font-mono text-zinc-400 tabular-nums">
+                      <span>Wired: {fmtMB(wiredMB)}</span>
+                      <span>GPU Wired Limit: {fmtMB(limitMB)} ({(physicalRatio * 100).toFixed(1)}%)</span>
+                    </div>
+                  </div>
+
+                  {/* Swap Pressure (30% Weight) */}
+                  <div className="p-3 rounded-lg bg-zinc-800/40 border border-zinc-800 space-y-2">
+                    <div className="flex items-center justify-between text-xs font-mono">
+                      <div className="flex items-center gap-2">
+                        <span className="w-2 h-2 rounded-full bg-amber-400" />
+                        <span className="text-zinc-300 font-medium">Swap Subsystem Pressure</span>
+                        <span className="text-zinc-500 text-[10px]">(30% Weight)</span>
+                      </div>
+                      <span className="text-amber-400 font-bold tabular-nums">
+                        +{(swapTDIContribution).toFixed(3)} TDI
+                      </span>
+                    </div>
+
+                    <div className="w-full h-2 rounded-full bg-zinc-800 overflow-hidden">
+                      <div
+                        className="h-full bg-gradient-to-r from-amber-500 to-rose-500 rounded-full transition-all duration-300"
+                        style={{ width: `${Math.min(100, swapSubsystemRatio * 100)}%` }}
+                      />
+                    </div>
+
+                    <div className="flex justify-between text-[11px] font-mono text-zinc-400 tabular-nums">
+                      <span>Swap In Use: {fmtMB(swapUsedMB)}</span>
+                      <span>Dynamic Ceiling: {fmtMB(dynamicSwapCeilingMB)} ({(swapSubsystemRatio * 100).toFixed(1)}%)</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Subsystem Summary Footer */}
+                <div className="flex items-center justify-between text-[11px] font-mono text-zinc-500 border-t border-zinc-800/80 pt-3">
+                  <div className="flex items-center gap-2">
+                    <Clock className="w-3.5 h-3.5 text-zinc-400" />
+                    <span>Sampling Frequency: 1.0s (Mach kernel C-bindings)</span>
+                  </div>
+                  <span className="text-zinc-400">Total Derived TDI: {tdi.toFixed(3)}</span>
+                </div>
+              </div>
+            </div>
+
+            {/* ══════════════════════════════════════════════════════════════
+               SECONDARY MATRIX GRID (3-COLUMN RESPONSIVE)
+            ══════════════════════════════════════════════ */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+
+              {/* CARD 1: Unified Memory Allocation */}
+              <div className="telemetry-card p-5 flex flex-col justify-between space-y-4">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Layers className="w-4 h-4 text-cyan-400" />
+                    <span className="text-xs font-mono uppercase tracking-wider text-zinc-400 font-medium">
+                      Unified Memory Allocation
+                    </span>
+                  </div>
+                  <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-zinc-800 text-zinc-400">
+                    Apple Silicon
+                  </span>
+                </div>
+
+                <div>
+                  <div className="flex items-baseline gap-2 font-mono">
+                    <span className="text-3xl font-bold text-zinc-100 tabular-nums">
+                      {fmtMB(wiredMB)}
+                    </span>
+                    <span className="text-xs text-zinc-500">
+                      / {fmtMB(limitMB)}
+                    </span>
+                  </div>
+                  <p className="text-[11px] font-mono text-zinc-400 mt-1">
+                    Active GPU Wired VRAM Allocation
+                  </p>
+                </div>
+
+                {/* Segmented Memory Bar */}
+                <div className="space-y-1.5">
+                  <div className="w-full h-2 rounded-full bg-zinc-800/80 overflow-hidden flex">
+                    <div
+                      className="h-full bg-cyan-500 transition-all duration-300"
+                      style={{ width: `${Math.min(100, (wiredMB / limitMB) * 100)}%` }}
+                    />
+                  </div>
+                  <div className="flex justify-between text-[10px] font-mono text-zinc-500">
+                    <span>Wired: {((wiredMB / limitMB) * 100).toFixed(1)}%</span>
+                    <span>Free Headroom: {fmtMB(Math.max(0, limitMB - wiredMB))}</span>
+                  </div>
+                </div>
+
+                <div className="border-t border-zinc-800/80 pt-3 flex items-center justify-between text-[11px] font-mono text-zinc-400">
+                  <span>Engine KV Cache:</span>
+                  <span className="text-zinc-200 tabular-nums">
+                    {latest?.kv_cache_mb ? fmtMB(latest.kv_cache_mb) : "0 MB (Idle)"}
+                  </span>
+                </div>
+              </div>
+
+              {/* CARD 2: Swap Subsystem */}
+              <div className="telemetry-card p-5 flex flex-col justify-between space-y-4">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <HardDrive className="w-4 h-4 text-amber-400" />
+                    <span className="text-xs font-mono uppercase tracking-wider text-zinc-400 font-medium">
+                      Swap Subsystem &amp; Disk
+                    </span>
+                  </div>
+                  <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-zinc-800 text-zinc-400">
+                    SSD Guard
+                  </span>
+                </div>
+
+                <div>
+                  <div className="flex items-baseline gap-2 font-mono">
+                    <span className="text-3xl font-bold text-zinc-100 tabular-nums">
+                      {fmtMB(swapUsedMB)}
+                    </span>
+                    <span className="text-xs text-zinc-500">
+                      / {fmtMB(dynamicSwapCeilingMB)} ceiling
+                    </span>
+                  </div>
+                  <p className="text-[11px] font-mono text-zinc-400 mt-1">
+                    Cumulative Pageouts: {fmtNum(pageouts)} pages
+                  </p>
+                </div>
+
+                {/* Swap Subsystem Status */}
+                <div className="space-y-1.5">
+                  <div className="w-full h-2 rounded-full bg-zinc-800/80 overflow-hidden flex">
+                    <div
+                      className="h-full bg-amber-500 transition-all duration-300"
+                      style={{ width: `${Math.min(100, (swapUsedMB / dynamicSwapCeilingMB) * 100)}%` }}
+                    />
+                  </div>
+                  <div className="flex justify-between text-[10px] font-mono text-zinc-500">
+                    <span>Ceiling Used: {((swapUsedMB / dynamicSwapCeilingMB) * 100).toFixed(1)}%</span>
+                    <span>Total Alloc: {fmtMB(latest?.swap_total_mb ?? 0)}</span>
+                  </div>
+                </div>
+
+                <div className="border-t border-zinc-800/80 pt-3 flex items-center justify-between text-[11px] font-mono text-zinc-400">
+                  <span>SSD Thrash State:</span>
+                  <span className={`tabular-nums font-semibold ${swapUsedMB > 0 ? "text-amber-400" : "text-emerald-400"}`}>
+                    {swapUsedMB > 0 ? "Swapping Active" : "Zero Thrash"}
+                  </span>
+                </div>
+              </div>
+
+              {/* CARD 3: Agent Velocity & Quota Radar */}
+              <div className="telemetry-card p-5 flex flex-col justify-between space-y-4">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Zap className="w-4 h-4 text-indigo-400" />
+                    <span className="text-xs font-mono uppercase tracking-wider text-zinc-400 font-medium">
+                      Agent Velocity Engine
+                    </span>
+                  </div>
+                  <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-zinc-800 text-zinc-400">
+                    OmniRoute (:20128)
+                  </span>
+                </div>
+
+                <div>
+                  <div className="flex items-baseline gap-2 font-mono">
+                    <span className="text-3xl font-bold text-zinc-100 tabular-nums">
+                      {(velocity?.tps ?? 0).toFixed(1)}
+                    </span>
+                    <span className="text-xs text-zinc-500">
+                      TPS (Tokens / Sec)
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-3 text-[11px] font-mono text-zinc-400 mt-1 tabular-nums">
+                    <span>TPM: {fmtNum(velocity?.tpm ?? 0)}</span>
+                    <span>•</span>
+                    <span>RPM: {(velocity?.rpm ?? 0).toFixed(1)} req/min</span>
+                  </div>
+                </div>
+
+                {/* Tripwire Status Pill */}
+                <div className="pt-2">
+                  <div className={`p-2.5 rounded-lg border text-xs font-mono flex items-center justify-between ${
+                    isRunaway
+                      ? "bg-rose-500/20 border-rose-500 text-rose-300 font-bold"
+                      : "bg-emerald-500/10 border-emerald-500/30 text-emerald-400"
+                  }`}>
+                    <span>Loop Tripwire:</span>
+                    <span className="uppercase">{isRunaway ? "RUNAWAY DETECTED" : "NOMINAL"}</span>
+                  </div>
+                </div>
+
+                <div className="border-t border-zinc-800/80 pt-3 flex items-center justify-between text-[11px] font-mono text-zinc-400">
+                  <span>Threshold Limit:</span>
+                  <span className="text-zinc-200 tabular-nums">
+                    {config?.velocity_alert_tps ?? 150} TPS / {config?.velocity_alert_rpm ?? 45} RPM
+                  </span>
+                </div>
+              </div>
+
+            </div>
+
+            {/* ══════════════════════════════════════════════════════════════
+               HISTORICAL VELOCITY & TELEMETRY SPARKLINES
+            ══════════════════════════════════════════════ */}
+            <div className="space-y-4">
+              <div className="flex flex-wrap items-center justify-between gap-4">
+                <div>
+                  <h3 className="text-sm font-mono font-semibold tracking-tight text-zinc-100">
+                    Historical Velocity &amp; Memory Trajectory
+                  </h3>
+                  <p className="text-xs font-mono text-zinc-500">
+                    Zero-overhead SVG sparklines capturing sliding-window token burn and memory pressure.
+                  </p>
+                </div>
+
+                {/* Segmented Window Picker */}
+                <div className="flex items-center p-1 rounded-lg bg-zinc-900 border border-zinc-800 font-mono text-xs">
+                  {(["1m", "5m", "1h"] as TimeWindow[]).map((win) => (
+                    <button
+                      key={win}
+                      onClick={() => setTimeWindow(win)}
+                      className={`px-3 py-1 rounded-md transition-all ${
+                        timeWindow === win
+                          ? "bg-zinc-800 text-zinc-100 font-semibold shadow"
+                          : "text-zinc-400 hover:text-zinc-200"
+                      }`}
+                    >
+                      {win === "1m" ? "Real-time (1s)" : win === "5m" ? "5m Rollup" : "1h History"}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Sparkline Canvas Grid */}
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                {/* Chart 1: TDI & Wired VRAM */}
+                <TelemetrySparkline
+                  data={currentChartData}
+                  dataKey="thrash_index"
+                  color="#10b981"
+                  unit="TDI"
+                  minVal={0}
+                  maxVal={1.0}
+                  warningLine={0.75}
+                  criticalLine={0.90}
+                  title="Thrash Danger Index (TDI)"
+                  currentVal={tdi.toFixed(2)}
+                />
+
+                {/* Chart 2: Token Velocity (TPS) */}
+                <TelemetrySparkline
+                  data={currentChartData}
+                  dataKey="tps"
+                  color="#6366f1"
+                  unit="TPS"
+                  minVal={0}
+                  warningLine={config?.velocity_alert_tps ?? 150}
+                  title="Token Velocity Burn Rate"
+                  currentVal={(velocity?.tps ?? 0).toFixed(1)}
+                />
+              </div>
+            </div>
+
+          </div>
+        )}
+
+        {/* ══════════════════════════════════════════════════════════════════
+           TAB 2: AI QUOTA RADAR
+        ══════════════════════════════════════════════════════════════════ */}
+        {activeTab === "quotas" && (
+          <div className="space-y-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="text-sm font-mono font-semibold text-zinc-100">
+                  AI Provider Quota &amp; Rate-Limit Radar
+                </h3>
+                <p className="text-xs font-mono text-zinc-500">
+                  Live quota balances, remaining tokens, and reset windows harvested via OmniRoute proxy.
+                </p>
+              </div>
+              <button
+                onClick={fetchREST}
+                className="text-xs font-mono px-3 py-1.5 rounded-lg bg-zinc-800 border border-zinc-700 text-zinc-300 hover:text-zinc-100"
+              >
+                Sync Quotas
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {quotas.length > 0 ? (
+                quotas.map((q) => (
+                  <div key={q.id} className="telemetry-card p-4 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-mono font-semibold text-zinc-200">{q.provider}</span>
+                      <span className={`text-[10px] font-mono px-2 py-0.5 rounded-full uppercase border ${
+                        q.status === "healthy"
+                          ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-400"
+                          : q.status === "warning"
+                          ? "bg-amber-500/10 border-amber-500/30 text-amber-400"
+                          : "bg-rose-500/10 border-rose-500/30 text-rose-400"
+                      }`}>
+                        {q.status}
+                      </span>
+                    </div>
+
+                    <div>
+                      <div className="text-sm font-mono font-bold text-zinc-100 tabular-nums">
+                        {q.tokens_left}
+                      </div>
+                      <div className="text-[11px] font-mono text-zinc-500 mt-0.5">
+                        Model: {q.model}
+                      </div>
+                    </div>
+
+                    <div className="space-y-1">
+                      <div className="w-full h-1.5 rounded-full bg-zinc-800 overflow-hidden">
+                        <div
+                          className={`h-full rounded-full transition-all ${
+                            q.remaining_pct > 30 ? "bg-emerald-500" : q.remaining_pct > 10 ? "bg-amber-500" : "bg-rose-500"
+                          }`}
+                          style={{ width: `${Math.max(2, Math.min(100, q.remaining_pct))}%` }}
+                        />
+                      </div>
+                      <div className="flex justify-between text-[10px] font-mono text-zinc-500">
+                        <span>Remaining: {q.remaining_pct.toFixed(0)}%</span>
+                        <span>Resets: {q.resets_in}</span>
+                      </div>
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <div className="col-span-3 text-center py-12 text-zinc-500 font-mono text-xs">
+                  No quota targets registered. Launch OmniRoute proxy at http://localhost:20128.
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* ══════════════════════════════════════════════════════════════════
+           TAB 3: LOCAL LLM ENGINES
+        ══════════════════════════════════════════════════════════════════ */}
+        {activeTab === "engines" && (
+          <div className="space-y-4">
+            <div>
+              <h3 className="text-sm font-mono font-semibold text-zinc-100">
+                Local LLM Inference Engine Probes
+              </h3>
+              <p className="text-xs font-mono text-zinc-500">
+                Near-zero latency memory probes for Ollama (:11434), LM Studio (:1234), vLLM (:8000), and MLX.
+              </p>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {engines?.engines?.map((eng) => (
+                <div key={eng.name} className="telemetry-card p-4 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Server className="w-4 h-4 text-cyan-400" />
+                      <span className="text-sm font-mono font-semibold text-zinc-200">{eng.name}</span>
+                    </div>
+                    <span className={`text-[10px] font-mono px-2 py-0.5 rounded-full border ${
+                      eng.active
+                        ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-400"
+                        : "bg-zinc-800 border-zinc-700 text-zinc-500"
+                    }`}>
+                      {eng.active ? `ACTIVE :${eng.port}` : `OFFLINE :${eng.port}`}
+                    </span>
+                  </div>
+
+                  {eng.models.length > 0 ? (
+                    <div className="space-y-2 pt-2 border-t border-zinc-800">
+                      {eng.models.map((m) => (
+                        <div key={m.name} className="flex justify-between items-center text-xs font-mono">
+                          <span className="text-zinc-300">{m.name}</span>
+                          <span className="text-zinc-400 tabular-nums">
+                            {m.size_gb.toFixed(1)} GB | KV: {fmtMB(m.kv_cache_mb)}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-xs font-mono text-zinc-500 pt-2 border-t border-zinc-800">
+                      No models loaded in unified memory.
+                    </p>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* ══════════════════════════════════════════════════════════════════
+           TAB 4: SPIKE INCIDENTS (24-HOUR AUDIT)
+        ══════════════════════════════════════════════ */}
+        {activeTab === "spikes" && (
+          <div className="space-y-4">
+            <div>
+              <h3 className="text-sm font-mono font-semibold text-zinc-100">
+                Top 24-Hour Memory Spike Incidents
+              </h3>
+              <p className="text-xs font-mono text-zinc-500">
+                Logged thrash danger spikes recorded by SQLite WAL telemetry store.
+              </p>
+            </div>
+
+            <div className="telemetry-card overflow-hidden">
+              <table className="w-full text-left text-xs font-mono">
+                <thead className="bg-zinc-800/60 border-b border-zinc-800 text-zinc-400">
+                  <tr>
+                    <th className="p-3">Incident Timestamp</th>
+                    <th className="p-3">Peak TDI</th>
+                    <th className="p-3">Wired VRAM</th>
+                    <th className="p-3">Swap Consumed</th>
+                    <th className="p-3">Cumulative Pageouts</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-zinc-800/60 text-zinc-300">
+                  {spikes.length > 0 ? (
+                    spikes.map((s, i) => (
+                      <tr key={i} className="hover:bg-zinc-800/30 transition-colors">
+                        <td className="p-3 text-zinc-400 tabular-nums">{new Date(s.timestamp * 1000).toLocaleString()}</td>
+                        <td className="p-3 font-bold text-rose-400 tabular-nums">{s.thrash_index.toFixed(3)}</td>
+                        <td className="p-3 tabular-nums">{fmtMB(s.wired_mb)}</td>
+                        <td className="p-3 tabular-nums">{fmtMB(s.swap_used_mb)}</td>
+                        <td className="p-3 tabular-nums">{fmtNum(s.pageouts)}</td>
+                      </tr>
+                    ))
+                  ) : (
+                    <tr>
+                      <td colSpan={5} className="p-8 text-center text-zinc-500">
+                        No critical memory spikes recorded in the last 24 hours.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {/* ══════════════════════════════════════════════════════════════════
+           TAB 5: CONFIG & PREFERENCES
+        ══════════════════════════════════════════════════════════════════ */}
+        {activeTab === "config" && (
+          <div className="space-y-4">
+            <div>
+              <h3 className="text-sm font-mono font-semibold text-zinc-100">
+                Zero-Dependency User Preferences (~/.sentinel/config.json)
+              </h3>
+              <p className="text-xs font-mono text-zinc-500">
+                Active thresholds loaded by Sentinel-AI configuration engine.
+              </p>
+            </div>
+
+            <div className="telemetry-card p-5 space-y-4 font-mono text-xs">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="p-3 rounded bg-zinc-800/40 border border-zinc-800">
+                  <span className="text-zinc-500">proxy_url:</span>
+                  <div className="text-zinc-200 font-semibold mt-1">{config?.proxy_url ?? "http://localhost:20128"}</div>
+                </div>
+                <div className="p-3 rounded bg-zinc-800/40 border border-zinc-800">
+                  <span className="text-zinc-500">poll_interval_seconds:</span>
+                  <div className="text-zinc-200 font-semibold mt-1">{config?.poll_interval_seconds ?? 1.0}s</div>
+                </div>
+                <div className="p-3 rounded bg-zinc-800/40 border border-zinc-800">
+                  <span className="text-zinc-500">tdi_warning_threshold:</span>
+                  <div className="text-amber-400 font-semibold mt-1">{config?.tdi_warning_threshold ?? 0.75}</div>
+                </div>
+                <div className="p-3 rounded bg-zinc-800/40 border border-zinc-800">
+                  <span className="text-zinc-500">tdi_critical_threshold:</span>
+                  <div className="text-rose-400 font-semibold mt-1">{config?.tdi_critical_threshold ?? 0.90}</div>
+                </div>
+                <div className="p-3 rounded bg-zinc-800/40 border border-zinc-800">
+                  <span className="text-zinc-500">velocity_alert_tps:</span>
+                  <div className="text-indigo-400 font-semibold mt-1">{config?.velocity_alert_tps ?? 150.0} TPS</div>
+                </div>
+                <div className="p-3 rounded bg-zinc-800/40 border border-zinc-800">
+                  <span className="text-zinc-500">velocity_alert_rpm:</span>
+                  <div className="text-indigo-400 font-semibold mt-1">{config?.velocity_alert_rpm ?? 45.0} RPM</div>
+                </div>
+                <div className="p-3 rounded bg-zinc-800/40 border border-zinc-800">
+                  <span className="text-zinc-500">swap_limit_ratio:</span>
+                  <div className="text-cyan-400 font-semibold mt-1">{config?.swap_limit_ratio ?? 0.25} (25% RAM)</div>
+                </div>
+                <div className="p-3 rounded bg-zinc-800/40 border border-zinc-800">
+                  <span className="text-zinc-500">notification_debounce_seconds:</span>
+                  <div className="text-zinc-200 font-semibold mt-1">{config?.notification_debounce_seconds ?? 60.0}s</div>
+                </div>
+              </div>
+
+              <div className="pt-2 text-zinc-500 text-[11px]">
+                To modify these preferences, edit <code className="text-zinc-300">~/.sentinel/config.json</code> in any text editor.
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ══════════════════════════════════════════════════════════════════
+           FOOTER
+        ══════════════════════════════════════════════════════════════════ */}
+        <footer className="text-center py-4 text-[11px] font-mono text-zinc-600 space-y-1">
+          <div>Sentinel-AI v1.0.0 • Darwin Mach Microkernel Bindings • Native launchd daemon</div>
+          <div className="text-zinc-700">Embedded Static Web Canvas (Zero Node.js Runtime Required)</div>
         </footer>
+
       </div>
     </div>
   );
