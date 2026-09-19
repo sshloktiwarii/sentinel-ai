@@ -11,12 +11,13 @@ Strategy:
 """
 
 import json
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 from starlette.testclient import TestClient
 
-from sentinel.server import app
+from sentinel.server import app, dist_dir
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -150,3 +151,37 @@ class TestPersistence:
             args, kwargs = call_kwargs
             swap = kwargs.get("swap_used_mb", args[2] if len(args) > 2 else None)
             assert swap == pytest.approx(MOCK_SWAP_USED)
+
+
+# ---------------------------------------------------------------------------
+# Static frontend & API route priority tests
+# ---------------------------------------------------------------------------
+
+class TestStaticFrontend:
+    def test_api_telemetry_returns_json(self):
+        """GET /api/telemetry must return JSON with application/json content-type (API routes have priority)."""
+        patches = _patch_harvester()
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6]:
+            with TestClient(app) as client:
+                response = client.get("/api/telemetry")
+                assert response.status_code == 200
+                assert "application/json" in response.headers.get("content-type", "")
+                payload = response.json()
+                assert isinstance(payload, dict)
+                assert payload["limit_mb"] == MOCK_LIMIT
+                assert payload["wired_mb"] == MOCK_WIRED
+                assert payload["swap_used_mb"] == pytest.approx(MOCK_SWAP_USED)
+                assert payload["thrash_index"] == pytest.approx(MOCK_THRASH)
+
+    def test_frontend_serves_index_html_when_web_dist_present(self):
+        """GET / serves the static index.html frontend with text/html when web_dist is present."""
+        assert dist_dir.exists(), f"Expected web_dist directory at {dist_dir}"
+        index_file = dist_dir / "index.html"
+        assert index_file.exists(), f"Expected index.html at {index_file}"
+
+        with TestClient(app) as client:
+            response = client.get("/")
+            assert response.status_code == 200
+            content_type = response.headers.get("content-type", "")
+            assert "text/html" in content_type
+            assert "<!doctype html>" in response.text.lower() or "<html" in response.text.lower()

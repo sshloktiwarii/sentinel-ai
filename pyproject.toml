@@ -30,5 +30,12 @@ dev = [
 [tool.setuptools.packages.find]
 where = ["."]
 
+# Ensure pre-built static Next.js frontend assets are packaged with the distribution
+# Populated via: npm --prefix web run build
+[tool.setuptools.package-data]
+sentinel = [
+    "web_dist/**/*",
+]
+
 [tool.pytest.ini_options]
 pythonpath = ["."]

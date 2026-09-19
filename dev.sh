@@ -1,62 +1,28 @@
 #!/usr/bin/env bash
-# dev.sh — start Sentinel-AI backend + Next.js frontend together
-# Usage: ./dev.sh
-# Press Ctrl-C (SIGINT) or send SIGTERM to stop both processes cleanly.
-
-set -euo pipefail
-
-BACKEND_PORT=8000
-
-# ── Colour helpers ──────────────────────────────────────────────────────
-_blue()  { printf '\033[0;34m%s\033[0m\n' "$*"; }
-_green() { printf '\033[0;32m%s\033[0m\n' "$*"; }
-_red()   { printf '\033[0;31m%s\033[0m\n' "$*"; }
-
-# ── Cleanup on exit ─────────────────────────────────────────────────────
-PIDS=()
+set -e
 
 cleanup() {
-  _blue ""
-  _blue "Shutting down…"
-  for pid in "${PIDS[@]}"; do
-    if kill -0 "$pid" 2>/dev/null; then
-      kill "$pid" 2>/dev/null || true
-    fi
-  done
-  # Wait briefly so child processes can terminate cleanly
-  sleep 0.5
-  for pid in "${PIDS[@]}"; do
-    if kill -0 "$pid" 2>/dev/null; then
-      kill -9 "$pid" 2>/dev/null || true
-    fi
-  done
-  _green "Done."
+  echo ""
+  echo "Shutting down Sentinel-AI..."
+  kill "$BACKEND_PID" "$FRONTEND_PID" 2>/dev/null || true
+  wait "$BACKEND_PID" 2>/dev/null || true
+  wait "$FRONTEND_PID" 2>/dev/null || true
+  echo "Done."
+  exit 0
 }
 
 trap cleanup SIGINT SIGTERM EXIT
 
-# ── Pre-flight checks ───────────────────────────────────────────────────
-if ! command -v uvicorn &>/dev/null; then
-  _red "Error: uvicorn not found. Install it with: pip install uvicorn"
-  exit 1
-fi
+# 1. Start FastAPI Telemetry Daemon
+source .venv/bin/activate
+uvicorn sentinel.server:app --port 8000 &
+BACKEND_PID=$!
+echo "Started Sentinel daemon [PID: $BACKEND_PID] on port 8000"
 
-if ! command -v npm &>/dev/null; then
-  _red "Error: npm not found. Install Node.js from https://nodejs.org"
-  exit 1
-fi
+# 2. Start Next.js Frontend
+(cd web && npm run dev) &
+FRONTEND_PID=$!
+echo "Started Next.js frontend [PID: $FRONTEND_PID] on port 3000"
 
-# ── Launch backend ───────────────────────────────────────────────────────
-_blue "Starting Sentinel backend on port ${BACKEND_PORT}…"
-uvicorn sentinel.server:app --port "$BACKEND_PORT" --reload &
-PIDS+=($!)
-
-# ── Launch frontend ──────────────────────────────────────────────────────
-_blue "Starting Next.js dev server…"
-npm --prefix web run dev &
-PIDS+=($!)
-
-_green "Both processes running. Press Ctrl-C to stop."
-
-# ── Wait for either process to exit ─────────────────────────────────────
-wait -n "${PIDS[@]}" 2>/dev/null || true
+echo "Sentinel-AI active. Press Ctrl+C to terminate."
+wait

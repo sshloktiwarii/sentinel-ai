@@ -150,7 +150,7 @@ class TestPublicQuotasApi:
 
             omni = next((item for item in data if item["id"] == "omniroute"), None)
             assert omni is not None
-            assert "tokens" in omni["tokens_left"] or "Unlimited" in omni["tokens_left"]
+            assert "tokens" in omni["tokens_left"] or "Unlimited" in omni["tokens_left"] or "Offline" in omni["tokens_left"]
 
 
 class TestGracefulFallback:

@@ -12,11 +12,13 @@ Exposes:
 """
 
 import asyncio
+from pathlib import Path
 import time
 from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from sentinel.database import get_history_window, get_spikes, init_db, insert_telemetry
 from sentinel.engines import get_local_engines_async
@@ -27,6 +29,7 @@ from sentinel.harvester import (
     get_pageout_count,
     get_swap_usage,
     get_wired_memory_mb,
+    is_apple_silicon,
 )
 from sentinel.quota import get_all_quotas, get_velocity_metrics
 
@@ -53,17 +56,18 @@ def _collect_reading() -> dict:
     velocity     = get_velocity_metrics()
     ts           = time.time()
     return {
-        "timestamp":       ts,
-        "wired_mb":        wired_mb,
-        "limit_mb":        limit_mb,
-        "swap_total_mb":   total_swap,
-        "swap_used_mb":    used_swap,
-        "pageouts":        pageouts,
-        "thrash_index":    thrash_index,
-        "engine_active":   engine_info.get("engine_active", False),
-        "kv_cache_mb":     engine_info.get("kv_cache_mb", 0.0),
-        "kv_pressure_pct": engine_info.get("kv_pressure_pct", 0.0),
-        "velocity":        velocity,
+        "timestamp":        ts,
+        "wired_mb":         wired_mb,
+        "limit_mb":         limit_mb,
+        "swap_total_mb":    total_swap,
+        "swap_used_mb":     used_swap,
+        "pageouts":         pageouts,
+        "thrash_index":     thrash_index,
+        "engine_active":    engine_info.get("engine_active", False),
+        "kv_cache_mb":      engine_info.get("kv_cache_mb", 0.0),
+        "kv_pressure_pct":  engine_info.get("kv_pressure_pct", 0.0),
+        "velocity":         velocity,
+        "is_apple_silicon": is_apple_silicon(),
     }
 
 # ── Lifecycle ─────────────────────────────────────────────────────────────────
@@ -181,5 +185,12 @@ async def api_engines() -> dict:
     """Return active local LLM engine status, loaded models, and KV-cache breakdown."""
     wired_mb = await asyncio.get_event_loop().run_in_executor(None, get_wired_memory_mb)
     return await get_local_engines_async(wired_mb=wired_mb)
+
+
+# ── Static Frontend ──────────────────────────────────────────────────────────
+
+dist_dir = Path(__file__).parent / "web_dist"
+if dist_dir.exists() and (dist_dir / "index.html").exists():
+    app.mount("/", StaticFiles(directory=str(dist_dir), html=True), name="frontend")
 
 

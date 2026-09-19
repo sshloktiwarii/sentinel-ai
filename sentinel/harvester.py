@@ -10,10 +10,35 @@ from __future__ import annotations
 
 import ctypes
 import ctypes.util
+import functools
+import logging
 import os
+import platform
 import re
 import subprocess
 from typing import Any
+
+logger = logging.getLogger("sentinel.harvester")
+
+__all__ = [
+    "HOST_VM_INFO64",
+    "VMStatistics64",
+    "XswUsage",
+    "check_architecture_guardrail",
+    "compute_thrash_danger_index",
+    "get_dynamic_swap_limit_mb",
+    "get_dynamic_wired_limit_mb",
+    "get_engine_pressure_snapshot",
+    "get_gpu_wired_limit",
+    "get_pageout_count",
+    "get_physical_memory_bytes",
+    "get_swap_usage",
+    "get_total_physical_memory_mb",
+    "get_wired_memory_mb",
+    "is_apple_silicon",
+]
+
+_non_arm64_notice_logged: bool = False
 
 # ── Darwin C-Library & Struct Definitions ─────────────────────────────────────
 
@@ -123,9 +148,106 @@ def _is_mocked(fn: Any) -> bool:
     return type(fn).__module__.startswith("unittest.mock")
 
 
+# ── Hardware Architecture & Dynamic Memory Probing ───────────────────────────
+
+@functools.lru_cache(maxsize=1)
+def is_apple_silicon() -> bool:
+    """Return True if running on Apple Silicon (M-series / ARM64) architecture."""
+    # 1. Check platform.machine()
+    try:
+        if platform.machine().lower() == "arm64":
+            return True
+    except Exception:
+        pass
+
+    # 2. Check Darwin sysctl "hw.optional.arm64" via ctypes
+    if _libc and hasattr(_libc, "sysctlbyname"):
+        try:
+            val = ctypes.c_int32(0)
+            size = ctypes.c_size_t(ctypes.sizeof(val))
+            ret = _libc.sysctlbyname(
+                b"hw.optional.arm64",
+                ctypes.byref(val),
+                ctypes.byref(size),
+                None,
+                0,
+            )
+            if ret == 0 and val.value == 1:
+                return True
+        except Exception:
+            pass
+
+    # 3. Defensive fallback: os.uname().machine
+    try:
+        mach = os.uname().machine.lower()
+        if "arm" in mach or "aarch64" in mach:
+            return True
+    except Exception:
+        pass
+
+    return False
+
+
+def check_architecture_guardrail() -> bool:
+    """Check machine architecture and log a one-time warning on Intel x86_64 Macs.
+
+    Returns True if Apple Silicon, False otherwise.
+    """
+    global _non_arm64_notice_logged
+    arm = is_apple_silicon()
+    if not arm and not _non_arm64_notice_logged:
+        logger.warning(
+            "Non-Apple Silicon Mac detected. Unified VRAM tracking is disabled; "
+            "swap and pageout telemetry remain active."
+        )
+        _non_arm64_notice_logged = True
+    return arm
+
+
+@functools.lru_cache(maxsize=1)
+def get_total_physical_memory_mb() -> float:
+    """Return total physical RAM in megabytes via sysctlbyname('hw.memsize'), cached permanently.
+
+    Falls back to 8192.0 MB if sysctl fails.
+    """
+    if _libc and hasattr(_libc, "sysctlbyname"):
+        try:
+            memsize = ctypes.c_uint64(0)
+            size = ctypes.c_size_t(ctypes.sizeof(memsize))
+            ret = _libc.sysctlbyname(
+                b"hw.memsize",
+                ctypes.byref(memsize),
+                ctypes.byref(size),
+                None,
+                0,
+            )
+            if ret == 0 and memsize.value > 0:
+                return float(memsize.value / (1024 * 1024))
+        except Exception:
+            pass
+
+    return 8192.0
+
+
+@functools.lru_cache(maxsize=1)
+def get_dynamic_swap_limit_mb() -> float:
+    """Return dynamic swap limit: max(2048.0, round(get_total_physical_memory_mb() * 0.25, 2))."""
+    return max(2048.0, round(get_total_physical_memory_mb() * 0.25, 2))
+
+
+def get_physical_memory_bytes() -> int:
+    """Return total physical RAM in bytes (backwards-compatible helper)."""
+    return int(get_total_physical_memory_mb() * 1024 * 1024)
+
+
+def get_dynamic_wired_limit_mb() -> int:
+    """Return dynamic wired GPU memory fallback: hw.memsize * 0.75 in MB (backwards-compatible helper)."""
+    return int(round(get_total_physical_memory_mb() * 0.75, 2))
+
+
 # ── Subprocess Fallbacks (for test harness compatibility) ─────────────────────
 
-def _fallback_get_gpu_wired_limit_subprocess() -> int:
+def _fallback_get_gpu_wired_limit_subprocess() -> float:
     try:
         output = subprocess.check_output(
             ["sysctl", "-n", "iogpu.wired_limit_mb"],
@@ -133,7 +255,7 @@ def _fallback_get_gpu_wired_limit_subprocess() -> int:
         )
         value = int(output.strip())
         if value > 0:
-            return value
+            return float(value)
     except Exception:
         pass
 
@@ -143,13 +265,13 @@ def _fallback_get_gpu_wired_limit_subprocess() -> int:
             text=True,
         )
         hw_memsize = int(output.strip())
-        limit_mb = int(hw_memsize * 0.75 / (1024 * 1024))
+        limit_mb = round((hw_memsize / (1024 * 1024)) * 0.75, 2)
         if limit_mb > 0:
             return limit_mb
     except Exception:
         pass
 
-    return 18432
+    return round(get_total_physical_memory_mb() * 0.75, 2)
 
 
 def _fallback_get_swap_usage_subprocess() -> tuple[float, float]:
@@ -219,14 +341,14 @@ def _fallback_get_wired_memory_mb_subprocess() -> float:
 
 # ── Public Harvester API ─────────────────────────────────────────────────────
 
-def get_gpu_wired_limit() -> int:
+def get_gpu_wired_limit() -> float:
     """Return the GPU wired memory limit in MB.
 
     Queries Darwin sysctl directly:
     1. `iogpu.wired_limit_mb` (or `iogpu.wired_mem_limit`) — used if > 0.
-    2. `hw.memsize`           — limit_mb = int(hw_memsize * 0.75 / 1024^2).
-    3. Hard fallback of 18432 MB.
+    2. Dynamic wired GPU fallback: round(get_total_physical_memory_mb() * 0.75, 2).
     """
+    check_architecture_guardrail()
     if _is_mocked(subprocess.check_output):
         return _fallback_get_gpu_wired_limit_subprocess()
 
@@ -243,7 +365,7 @@ def get_gpu_wired_limit() -> int:
                 0,
             )
             if ret == 0 and limit_val.value > 0:
-                return int(limit_val.value)
+                return float(limit_val.value)
 
             # 2. Try iogpu.wired_mem_limit (uint64 bytes)
             limit_val64 = ctypes.c_uint64(0)
@@ -256,26 +378,11 @@ def get_gpu_wired_limit() -> int:
                 0,
             )
             if ret == 0 and limit_val64.value > 0:
-                return int(limit_val64.value // (1024 * 1024))
-
-            # 3. Derive from hw.memsize
-            memsize = ctypes.c_uint64(0)
-            size = ctypes.c_size_t(ctypes.sizeof(memsize))
-            ret = _libc.sysctlbyname(
-                b"hw.memsize",
-                ctypes.byref(memsize),
-                ctypes.byref(size),
-                None,
-                0,
-            )
-            if ret == 0 and memsize.value > 0:
-                limit_mb = int(memsize.value * 0.75 / (1024 * 1024))
-                if limit_mb > 0:
-                    return limit_mb
+                return float(limit_val64.value // (1024 * 1024))
         except Exception:
             pass
 
-    return _fallback_get_gpu_wired_limit_subprocess()
+    return round(get_total_physical_memory_mb() * 0.75, 2)
 
 
 def get_swap_usage() -> tuple[float, float]:
@@ -339,6 +446,7 @@ def get_wired_memory_mb() -> float:
 
     Multiplies wire_count by host physical page size without parsing text.
     """
+    check_architecture_guardrail()
     if _is_mocked(subprocess.run):
         return _fallback_get_wired_memory_mb_subprocess()
 
@@ -366,25 +474,24 @@ def compute_thrash_danger_index(
     wired_mb: float,
     limit_mb: float,
     swap_used_mb: float,
-    swap_limit_mb: float = 6144.0,
+    swap_limit_mb: float | None = None,
 ) -> float:
     """Compute a 0.0–1.0 memory pressure index.
 
-    - If limit_mb <= 0, it is treated as 18432.0.
-    - If swap_limit_mb <= 0, it is treated as 6144.0.
+    - If limit_mb <= 0, it falls back to dynamic wired limit (hw.memsize * 0.75).
+    - If swap_limit_mb is None or <= 0, it calls get_dynamic_swap_limit_mb().
     - Returns 1.0 immediately when mem_ratio >= 1.0 (physical memory saturation).
     - Otherwise: score = (0.7 * mem_ratio) + (0.3 * swap_ratio), clamped to
       [0.0, 1.0], rounded to 4 decimal places.
-    - swap_ratio is computed as min(1.0, swap_val / swap_limit_mb) where
-      swap_limit_mb defaults to 6144.0 MB (scaling swap capacity to 25% of 24 GB).
+    - swap_ratio is computed as min(1.0, swap_val / swap_limit_mb).
 
     swap_used_mb may be passed as a float/int, a tuple/list (total, used), or a
     dict with a "used" key; all forms are normalised before use.
     """
     if limit_mb <= 0:
-        limit_mb = 18432.0
-    if swap_limit_mb <= 0:
-        swap_limit_mb = 6144.0
+        limit_mb = float(get_total_physical_memory_mb() * 0.75)
+    if swap_limit_mb is None or swap_limit_mb <= 0:
+        swap_limit_mb = float(get_dynamic_swap_limit_mb())
 
     # --- normalise swap_used_mb to a plain float ---
     if isinstance(swap_used_mb, (tuple, list)):

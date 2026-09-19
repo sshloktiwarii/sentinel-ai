@@ -105,6 +105,7 @@ class SentinelMenuBarApp(rumps.App):
                 get_pageout_count,
                 get_swap_usage,
                 get_wired_memory_mb,
+                is_apple_silicon,
             )
 
             wired = get_wired_memory_mb()
@@ -119,6 +120,7 @@ class SentinelMenuBarApp(rumps.App):
                 "swap_used_mb": used_swap,
                 "swap_total_mb": total_swap,
                 "pageouts": pageouts,
+                "is_apple_silicon": is_apple_silicon(),
             }
         except Exception:
             return {
@@ -127,6 +129,7 @@ class SentinelMenuBarApp(rumps.App):
                 "limit_mb": 18432.0,
                 "swap_used_mb": 0.0,
                 "pageouts": 0,
+                "is_apple_silicon": True,
             }
 
     def fetch_quotas(self) -> list[dict[str, Any]]:

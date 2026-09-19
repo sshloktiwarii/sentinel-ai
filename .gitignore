@@ -1,0 +1,27 @@
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+build/
+dist/
+*.egg-info/
+
+# Local databases & logs
+*.db
+*.db-wal
+*.db-shm
+*.log
+
+# macOS & Editor metadata
+.DS_Store
+.vscode/
+
+# Node source builds
+web/node_modules/
+web/.next/
+
+# Video generation & media dumps
+brag-output*/
+brag-clean/
+captured-dashboard/
