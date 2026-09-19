@@ -13,12 +13,16 @@ dist/
 *.db-shm
 *.log
 
-# AI & Editor traces
-.aider*
-.vscode/
+# macOS & IDE metadata
 .DS_Store
+.vscode/
 
-# Media, promo, scratch files
+# Node source builds
+web/node_modules/
+web/.next/
+
+# AI agent traces & video scratchpads
+.aider*
 brag-output*/
 brag-clean/
 captured-dashboard/
