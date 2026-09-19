@@ -12,10 +12,12 @@ dependencies = [
     "httpx2>=0.28.2",
     "rumps>=0.4.0",
     "starlette>=0.46.2",
+    "uvicorn>=0.30.0",
     "websockets>=15.0.1",
 ]
 
 [project.scripts]
+sentinel = "sentinel.server:start"
 sentinel-bar = "sentinel.menubar:main"
 sentinel-service = "sentinel.service:main"
 
@@ -27,8 +29,13 @@ dev = [
     "anyio>=4.15.1",
 ]
 
+[tool.setuptools]
+include-package-data = true
+
 [tool.setuptools.packages.find]
 where = ["."]
+include = ["sentinel*"]
+exclude = ["tests*", "scripts*", "web*"]
 
 # Ensure pre-built static Next.js frontend assets are packaged with the distribution
 # Populated via: npm --prefix web run build

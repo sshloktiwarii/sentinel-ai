@@ -5,6 +5,7 @@ SQLite persistence layer for Sentinel-AI.
 Operates strictly in WAL journal mode per the spec contract.
 """
 
+from pathlib import Path
 import sqlite3
 import time
 import threading
@@ -12,12 +13,21 @@ from contextlib import contextmanager
 from typing import Generator
 
 # Default DB path; override via init_db(path=...) for tests.
-_DB_PATH = "sentinel.db"
+DEFAULT_SENTINEL_DIR = Path.home() / ".sentinel"
+DEFAULT_DB_PATH = DEFAULT_SENTINEL_DIR / "sentinel.db"
+_DB_PATH = str(DEFAULT_DB_PATH)
 _local = threading.local()
 
-def _resolve(path: str | None) -> str:
+def _resolve(path: str | Path | None) -> str:
     """Return *path* if given, otherwise the current module-level default."""
-    return path if path is not None else _DB_PATH
+    resolved = str(path) if path is not None else str(_DB_PATH)
+    p = Path(resolved)
+    if resolved != ":memory:" and p.parent and not p.parent.exists():
+        try:
+            p.parent.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
+    return resolved
 
 @contextmanager
 def _connect(path: str) -> Generator[sqlite3.Connection, None, None]:

@@ -14,6 +14,7 @@ This document records the foundational architectural and system design decisions
 - [ADR 006: SQLite WAL Mode with Precomputed Aggregations over In-Memory Buffers or Heavy DBs](#adr-006-sqlite-wal-mode-with-precomputed-aggregations-over-in-memory-buffers-or-heavy-dbs)
 - [ADR 007: Dual Interface Architecture (Native Menu Bar + Rich Canvas)](#adr-007-dual-interface-architecture-native-menu-bar--rich-canvas)
 - [ADR 008: Zero-Dependency JSON User Preferences via `~/.sentinel/config.json`](#adr-008-zero-dependency-json-user-preferences-via-sentinelconfigjson)
+- [ADR 009: Zero-Node Python Wheel Packaging via Embedded Static Distribution](#adr-009-zero-node-python-wheel-packaging-via-embedded-static-distribution)
 
 ---
 
@@ -287,3 +288,41 @@ Different development setups have distinct operating characteristics and sensiti
 - **Environment Variables**: Considered, but rejected as the primary configuration mechanism because environment variables are cumbersome to manage and persist across native macOS GUI apps, launchd LaunchAgents, and menu bar companions without shell wrappers.
 - **YAML or TOML File Formats**: Rejected because standard Python 3 does not include a built-in YAML parser (requiring PyYAML), and TOML write/dump support is not standard across all Python versions without third-party dependencies. JSON is natively supported by Python's standard library with zero external dependencies.
 - **SQLite Configuration Table**: Rejected because storing settings in SQLite makes quick inspection and manual editing with plain text editors tedious for developers.
+
+---
+
+## ADR 009: Zero-Node Python Wheel Packaging via Embedded Static Distribution
+
+### Decision
+Package statically pre-compiled Next.js assets (`web_dist`) directly inside the Python package wheel distribution via `setuptools.package-data` and `include-package-data = true`.
+
+### Context & Problem
+Sentinel-AI features a rich Next.js canvas dashboard with real-time SVG sparklines, dark-mode glassmorphism, and token velocity tripwires. However, requiring users to install Node.js, execute `npm install`, and run `npm run build` or launch a Next.js development server introduces massive friction:
+1. **Unwanted Runtime Dependencies**: An Apple Silicon systems monitor that interacts natively with Darwin Mach kernel C-bindings and Python 3 should not impose Node.js, npm, or massive `node_modules/` trees onto end-user environments.
+2. **Distribution Complexity**: Users expect a simple, single-command installation experience via `pip install sentinel-ai` or `uv tool install sentinel-ai`.
+3. **Daemon Reliability**: A launchd user agent running in the background cannot rely on secondary Node daemon processes or inter-process port management for web asset delivery.
+
+### What It Does
+1. **Embedded Static Distribution (`sentinel/web_dist/`)**:
+   - The Next.js dashboard is pre-compiled using Next.js static export (`output: 'export'`, `unoptimized: true`), targeting `sentinel/web_dist/`.
+   - `pyproject.toml` is configured with:
+     ```toml
+     [tool.setuptools]
+     include-package-data = true
+
+     [tool.setuptools.package-data]
+     sentinel = ["web_dist/**/*"]
+     ```
+   - When building a source distribution or binary wheel, the compiled assets (`index.html`, `_next/static/**`, icons, SVGs) are bundled directly into the `.whl` package.
+2. **Standard Library Single-Port Serving**:
+   - FastAPI serves the embedded directory at `/` via `StaticFiles(directory=str(dist_dir), html=True)`.
+   - The FastAPI backend simultaneously handles `/ws/telemetry`, `/api/*` REST endpoints, and static HTML/JS/CSS assets over a single port (8000), requiring zero external web servers or Node runtime processes.
+3. **Turnkey CLI Entry Points**:
+   - CLI commands are registered directly in `pyproject.toml`:
+     * `sentinel`: launches the unified FastAPI server and web canvas.
+     * `sentinel-bar`: launches the native macOS menu bar companion.
+     * `sentinel-service`: manages the launchd daemon lifecycle.
+
+### Alternatives Considered
+- **Requiring Separate Node.js Runtime Setup**: Rejected. Requiring `node`, `npm`, and separate Next.js servers ruins the native Apple Silicon utility aesthetic and introduces high friction for developers who just want to monitor their VRAM.
+- **Standalone Binary Packaging via PyInstaller**: Rejected. PyInstaller binaries for macOS bundle Python runtimes, bloated dynamic libraries, and result in 100MB+ executables that complicate macOS Gatekeeper code-signing, notarization, and dynamic Mach kernel `ctypes` linking. Packaging wheels with embedded static assets remains under 5MB while preserving full Python ecosystem compatibility.

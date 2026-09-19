@@ -12,6 +12,7 @@ Exposes:
 """
 
 import asyncio
+import os
 from pathlib import Path
 import time
 from typing import Any, Literal
@@ -212,5 +213,37 @@ async def api_config() -> dict:
 dist_dir = Path(__file__).parent / "web_dist"
 if dist_dir.exists() and (dist_dir / "index.html").exists():
     app.mount("/", StaticFiles(directory=str(dist_dir), html=True), name="frontend")
+
+
+def start() -> None:
+    """CLI entry point to launch the Sentinel-AI server."""
+    import argparse
+    import uvicorn
+
+    parser = argparse.ArgumentParser(description="Sentinel-AI Telemetry & Quota Server")
+    parser.add_argument(
+        "--host",
+        default=os.environ.get("SENTINEL_HOST", "127.0.0.1"),
+        help="Host address to bind (default: 127.0.0.1)",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=int(os.environ.get("SENTINEL_PORT", 8000)),
+        help="Port to bind (default: 8000)",
+    )
+    parser.add_argument(
+        "--reload",
+        action="store_true",
+        help="Enable auto-reload for development",
+    )
+    args = parser.parse_args()
+
+    uvicorn.run("sentinel.server:app", host=args.host, port=args.port, reload=args.reload)
+
+
+if __name__ == "__main__":
+    start()
+
 
 

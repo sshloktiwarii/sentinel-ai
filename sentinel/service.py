@@ -22,11 +22,11 @@ from typing import Any
 # ── LaunchAgent Constants ─────────────────────────────────────────────────────
 
 SERVICE_LABEL = "com.sentinel.daemon"
-DEFAULT_PLIST_DIR = os.path.expanduser("~/Library/LaunchAgents")
-DEFAULT_PLIST_PATH = os.path.join(DEFAULT_PLIST_DIR, f"{SERVICE_LABEL}.plist")
-DEFAULT_SENTINEL_DIR = os.path.expanduser("~/.sentinel")
-DEFAULT_LOG_PATH = os.path.join(DEFAULT_SENTINEL_DIR, "daemon.log")
-DEFAULT_ERR_PATH = os.path.join(DEFAULT_SENTINEL_DIR, "daemon.err")
+DEFAULT_PLIST_DIR = str(Path.home() / "Library" / "LaunchAgents")
+DEFAULT_PLIST_PATH = str(Path.home() / "Library" / "LaunchAgents" / f"{SERVICE_LABEL}.plist")
+DEFAULT_SENTINEL_DIR = str(Path.home() / ".sentinel")
+DEFAULT_LOG_PATH = str(Path.home() / ".sentinel" / "daemon.log")
+DEFAULT_ERR_PATH = str(Path.home() / ".sentinel" / "daemon.err")
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8000
 
