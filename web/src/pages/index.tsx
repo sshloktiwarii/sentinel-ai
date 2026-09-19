@@ -351,8 +351,12 @@ export default function Home() {
     }));
   }, [currentChartData]);
 
+  // Color discipline: neutral zinc below 0.50, amber at 0.75, crimson at 0.90
+  const tdiSparklineColor = tdi >= 0.90 ? "#f43f5e" : tdi >= 0.75 ? "#f59e0b" : "#71717a";
+  const tpsSparklineColor = isRunaway ? "#f43f5e" : (velocity?.tps ?? 0) > 0 ? "#818cf8" : "#71717a";
+
   return (
-    <div className="min-h-screen bg-[#09090b] text-zinc-100 flex flex-col font-sans selection:bg-cyan-500/30 selection:text-cyan-200">
+    <div className="min-h-screen bg-[#09090b] text-zinc-100 flex flex-col font-sans selection:bg-zinc-800 selection:text-zinc-100">
       <Head>
         <title>Sentinel-AI — Unified Memory & Velocity Telemetry</title>
         <meta name="description" content="Zero-overhead unified memory telemetry and runaway agent loop tripwire for Apple Silicon." />
@@ -394,17 +398,17 @@ export default function Home() {
             {/* Live Connection Pill */}
             <div className={`inline-flex items-center gap-2 px-2.5 py-1 rounded-full font-mono text-[11px] border transition-colors ${
               status === "connected"
-                ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-400"
+                ? "bg-zinc-900/60 border-zinc-800/80 text-zinc-300"
                 : status === "reconnecting"
                 ? "bg-amber-500/10 border-amber-500/30 text-amber-400"
                 : "bg-rose-500/10 border-rose-500/30 text-rose-400"
             }`}>
-              <span className="relative flex h-2 w-2">
-                {status === "connected" && !isPaused && (
-                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+              <span className="relative flex h-1.5 w-1.5">
+                {status === "reconnecting" && (
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75" />
                 )}
-                <span className={`relative inline-flex rounded-full h-2 w-2 ${
-                  status === "connected" ? "bg-emerald-500" : status === "reconnecting" ? "bg-amber-500" : "bg-rose-500"
+                <span className={`relative inline-flex rounded-full h-1.5 w-1.5 ${
+                  status === "connected" ? (isPaused ? "bg-zinc-500" : "bg-emerald-400") : status === "reconnecting" ? "bg-amber-400" : "bg-rose-400"
                 }`} />
               </span>
               <span>
@@ -413,12 +417,12 @@ export default function Home() {
             </div>
 
             {/* Apple Silicon Hardware Banner */}
-            <div className="inline-flex items-center gap-2 px-2.5 py-1 rounded-full font-mono text-[11px] bg-zinc-800/60 border border-zinc-700/50 text-zinc-300">
-              <Cpu className="w-3.5 h-3.5 text-indigo-400" />
+            <div className="inline-flex items-center gap-2 px-2.5 py-1 rounded-full font-mono text-[11px] bg-zinc-900/40 border border-zinc-800/60 text-zinc-400">
+              <Cpu className="w-3.5 h-3.5 text-zinc-400" />
               <span>Apple Silicon</span>
-              <span className="text-zinc-500">|</span>
-              <span className="text-zinc-400">Ceiling:</span>
-              <span className="text-zinc-200 tabular-nums">{fmtMB(dynamicSwapCeilingMB)}</span>
+              <span className="text-zinc-600">|</span>
+              <span className="text-zinc-500">Ceiling:</span>
+              <span className="text-zinc-300 tabular-nums">{fmtMB(dynamicSwapCeilingMB)}</span>
             </div>
           </div>
 
@@ -499,17 +503,6 @@ export default function Home() {
             animate="show"
             className="space-y-6"
           >
-            {/* Runaway Radar Component */}
-            <motion.div variants={itemVariants}>
-              <RunawayRadar
-                isRunaway={isRunaway}
-                burnRateStatus={velocity?.burn_rate_status ?? "nominal"}
-                reason={velocity?.reason}
-                tps={velocity?.tps ?? 0}
-                rpm={velocity?.rpm ?? 0}
-              />
-            </motion.div>
-
             {/* HERO SECTION: Thrash Danger Index (TDI) Radial Gauge & Decomposition */}
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
 
@@ -517,7 +510,7 @@ export default function Home() {
               <motion.div variants={itemVariants} className="telemetry-card lg:col-span-5 flex flex-col justify-between p-5">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
-                    <Activity className="w-4 h-4 text-emerald-400" />
+                    <Activity className="w-4 h-4 text-zinc-400" />
                     <span className="text-xs font-mono uppercase tracking-wider text-zinc-300 font-semibold">
                       Thrash Danger Index (TDI)
                     </span>
@@ -534,14 +527,14 @@ export default function Home() {
                   </div>
                 </div>
 
-                {/* Motion-Driven SVG Radial Gauge */}
+                {/* Precision Ultra-Thin 4px SVG Radial Gauge */}
                 <TDIRadialMeter tdi={tdi} />
 
                 {/* Gauge Footnote */}
                 <div className="text-[11px] font-mono text-zinc-500 text-center border-t border-zinc-800/80 pt-3 flex items-center justify-center gap-4">
-                  <span>Warning: &gt; 0.75</span>
+                  <span>Warning: &ge; 0.75</span>
                   <span>•</span>
-                  <span>Critical: &gt; 0.90</span>
+                  <span>Critical: &ge; 0.90</span>
                 </div>
               </motion.div>
 
@@ -558,21 +551,23 @@ export default function Home() {
 
                 <div className="space-y-4">
                   {/* Physical Pressure (70% Weight) */}
-                  <div className="p-3 rounded-lg bg-zinc-800/40 border border-zinc-800 space-y-2">
+                  <div className="p-3 rounded-lg bg-zinc-900/40 border border-zinc-800/80 space-y-2">
                     <div className="flex items-center justify-between text-xs font-mono">
                       <div className="flex items-center gap-2">
-                        <span className="w-2 h-2 rounded-full bg-cyan-400" />
+                        <span className={`w-2 h-2 rounded-full ${physicalRatio >= 0.90 ? "bg-rose-500" : physicalRatio >= 0.75 ? "bg-amber-400" : "bg-zinc-400"}`} />
                         <span className="text-zinc-300 font-medium">Physical Wired VRAM Pressure</span>
                         <span className="text-zinc-500 text-[10px]">(70% Weight)</span>
                       </div>
-                      <span className="text-cyan-400 font-bold tabular-nums">
+                      <span className="text-zinc-300 font-medium tabular-nums">
                         +<AnimatedMetric value={physicalTDIContribution} precision={3} /> TDI
                       </span>
                     </div>
 
-                    <div className="w-full h-2 rounded-full bg-zinc-800 overflow-hidden">
+                    <div className="w-full h-1.5 rounded-full bg-zinc-800/80 overflow-hidden">
                       <motion.div
-                        className="h-full bg-gradient-to-r from-cyan-500 to-blue-500 rounded-full"
+                        className={`h-full rounded-full transition-colors ${
+                          physicalRatio >= 0.90 ? "bg-rose-500" : physicalRatio >= 0.75 ? "bg-amber-500" : "bg-zinc-400"
+                        }`}
                         animate={{ width: `${Math.min(100, physicalRatio * 100)}%` }}
                         transition={{ duration: 0.5, ease: "easeOut" }}
                       />
@@ -585,21 +580,23 @@ export default function Home() {
                   </div>
 
                   {/* Swap Pressure (30% Weight) */}
-                  <div className="p-3 rounded-lg bg-zinc-800/40 border border-zinc-800 space-y-2">
+                  <div className="p-3 rounded-lg bg-zinc-900/40 border border-zinc-800/80 space-y-2">
                     <div className="flex items-center justify-between text-xs font-mono">
                       <div className="flex items-center gap-2">
-                        <span className="w-2 h-2 rounded-full bg-amber-400" />
+                        <span className={`w-2 h-2 rounded-full ${swapSubsystemRatio >= 0.90 ? "bg-rose-500" : swapSubsystemRatio >= 0.75 ? "bg-amber-400" : "bg-zinc-600"}`} />
                         <span className="text-zinc-300 font-medium">Swap Subsystem Pressure</span>
                         <span className="text-zinc-500 text-[10px]">(30% Weight)</span>
                       </div>
-                      <span className="text-amber-400 font-bold tabular-nums">
+                      <span className="text-zinc-400 font-medium tabular-nums">
                         +<AnimatedMetric value={swapTDIContribution} precision={3} /> TDI
                       </span>
                     </div>
 
-                    <div className="w-full h-2 rounded-full bg-zinc-800 overflow-hidden">
+                    <div className="w-full h-1.5 rounded-full bg-zinc-800/80 overflow-hidden">
                       <motion.div
-                        className="h-full bg-gradient-to-r from-amber-500 to-rose-500 rounded-full"
+                        className={`h-full rounded-full transition-colors ${
+                          swapSubsystemRatio >= 0.90 ? "bg-rose-500" : swapSubsystemRatio >= 0.75 ? "bg-amber-500" : "bg-zinc-600"
+                        }`}
                         animate={{ width: `${Math.min(100, swapSubsystemRatio * 100)}%` }}
                         transition={{ duration: 0.5, ease: "easeOut" }}
                       />
@@ -615,7 +612,7 @@ export default function Home() {
                 {/* Subsystem Summary Footer */}
                 <div className="flex items-center justify-between text-[11px] font-mono text-zinc-500 border-t border-zinc-800/80 pt-3">
                   <div className="flex items-center gap-2">
-                    <Clock className="w-3.5 h-3.5 text-zinc-400" />
+                    <Clock className="w-3.5 h-3.5 text-zinc-500" />
                     <span>Sampling Frequency: 1.0s (Mach kernel C-bindings)</span>
                   </div>
                   <span className="text-zinc-400">Total Derived TDI: <AnimatedMetric value={tdi} precision={3} /></span>
@@ -632,19 +629,19 @@ export default function Home() {
               <motion.div variants={itemVariants} className="telemetry-card p-5 flex flex-col justify-between space-y-4">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
-                    <Layers className="w-4 h-4 text-cyan-400" />
-                    <span className="text-xs font-mono uppercase tracking-wider text-zinc-400 font-medium">
+                    <Layers className="w-4 h-4 text-zinc-400" />
+                    <span className="text-xs font-mono uppercase tracking-wider text-zinc-300 font-medium">
                       Unified Memory Allocation
                     </span>
                   </div>
-                  <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-zinc-800 text-zinc-400">
+                  <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-zinc-800/60 text-zinc-400 border border-zinc-800">
                     Apple Silicon
                   </span>
                 </div>
 
                 <div>
                   <div className="flex items-baseline gap-2 font-mono">
-                    <span className="text-3xl font-bold text-zinc-100 tabular-nums">
+                    <span className="text-3xl font-semibold text-zinc-100 tabular-nums">
                       <AnimatedMetric value={wiredMB} formatFn={fmtMB} />
                     </span>
                     <span className="text-xs text-zinc-500">
@@ -658,9 +655,11 @@ export default function Home() {
 
                 {/* Segmented Memory Bar */}
                 <div className="space-y-1.5">
-                  <div className="w-full h-2 rounded-full bg-zinc-800/80 overflow-hidden flex">
+                  <div className="w-full h-1.5 rounded-full bg-zinc-800/80 overflow-hidden flex">
                     <motion.div
-                      className="h-full bg-cyan-500 rounded-full"
+                      className={`h-full rounded-full transition-colors ${
+                        (wiredMB / limitMB) >= 0.90 ? "bg-rose-500" : (wiredMB / limitMB) >= 0.75 ? "bg-amber-500" : "bg-zinc-400"
+                      }`}
                       animate={{ width: `${Math.min(100, (wiredMB / limitMB) * 100)}%` }}
                       transition={{ duration: 0.5, ease: "easeOut" }}
                     />
@@ -672,8 +671,8 @@ export default function Home() {
                 </div>
 
                 <div className="border-t border-zinc-800/80 pt-3 flex items-center justify-between text-[11px] font-mono text-zinc-400">
-                  <span>Engine KV Cache:</span>
-                  <span className="text-zinc-200 tabular-nums">
+                  <span className="text-zinc-500">Engine KV Cache:</span>
+                  <span className="text-zinc-300 tabular-nums">
                     {latest?.kv_cache_mb ? fmtMB(latest.kv_cache_mb) : "0 MB (Idle)"}
                   </span>
                 </div>
@@ -683,19 +682,19 @@ export default function Home() {
               <motion.div variants={itemVariants} className="telemetry-card p-5 flex flex-col justify-between space-y-4">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
-                    <HardDrive className="w-4 h-4 text-amber-400" />
-                    <span className="text-xs font-mono uppercase tracking-wider text-zinc-400 font-medium">
+                    <HardDrive className="w-4 h-4 text-zinc-400" />
+                    <span className="text-xs font-mono uppercase tracking-wider text-zinc-300 font-medium">
                       Swap Subsystem &amp; Disk
                     </span>
                   </div>
-                  <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-zinc-800 text-zinc-400">
+                  <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-zinc-800/60 text-zinc-400 border border-zinc-800">
                     SSD Guard
                   </span>
                 </div>
 
                 <div>
                   <div className="flex items-baseline gap-2 font-mono">
-                    <span className="text-3xl font-bold text-zinc-100 tabular-nums">
+                    <span className="text-3xl font-semibold text-zinc-100 tabular-nums">
                       <AnimatedMetric value={swapUsedMB} formatFn={fmtMB} />
                     </span>
                     <span className="text-xs text-zinc-500">
@@ -709,9 +708,11 @@ export default function Home() {
 
                 {/* Swap Subsystem Status */}
                 <div className="space-y-1.5">
-                  <div className="w-full h-2 rounded-full bg-zinc-800/80 overflow-hidden flex">
+                  <div className="w-full h-1.5 rounded-full bg-zinc-800/80 overflow-hidden flex">
                     <motion.div
-                      className="h-full bg-amber-500 rounded-full"
+                      className={`h-full rounded-full transition-colors ${
+                        (swapUsedMB / dynamicSwapCeilingMB) >= 0.90 ? "bg-rose-500" : (swapUsedMB / dynamicSwapCeilingMB) >= 0.75 ? "bg-amber-500" : "bg-zinc-600"
+                      }`}
                       animate={{ width: `${Math.min(100, (swapUsedMB / dynamicSwapCeilingMB) * 100)}%` }}
                       transition={{ duration: 0.5, ease: "easeOut" }}
                     />
@@ -723,37 +724,49 @@ export default function Home() {
                 </div>
 
                 <div className="border-t border-zinc-800/80 pt-3 flex items-center justify-between text-[11px] font-mono text-zinc-400">
-                  <span>SSD Thrash State:</span>
-                  <span className={`tabular-nums font-semibold ${swapUsedMB > 0 ? "text-amber-400" : "text-emerald-400"}`}>
+                  <span className="text-zinc-500">SSD Thrash State:</span>
+                  <span className={`tabular-nums font-medium ${swapUsedMB > 0 ? "text-amber-400" : "text-zinc-500"}`}>
                     {swapUsedMB > 0 ? "Swapping Active" : "Zero Thrash"}
                   </span>
                 </div>
               </motion.div>
 
-              {/* CARD 3: Agent Velocity & Quota Radar */}
+              {/* CARD 3: Token Velocity & Loop Tripwire */}
               <motion.div variants={itemVariants} className="telemetry-card p-5 flex flex-col justify-between space-y-4">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
-                    <Zap className="w-4 h-4 text-indigo-400" />
-                    <span className="text-xs font-mono uppercase tracking-wider text-zinc-400 font-medium">
-                      Agent Velocity Engine
+                    <Zap className="w-4 h-4 text-zinc-400" />
+                    <span className="text-xs font-mono uppercase tracking-wider text-zinc-300 font-medium">
+                      Token Velocity &amp; Tripwire
                     </span>
                   </div>
-                  <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-zinc-800 text-zinc-400">
+                  <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-zinc-800/60 text-zinc-400 border border-zinc-800">
                     OmniRoute (:20128)
                   </span>
                 </div>
 
                 <div>
-                  <div className="flex items-baseline gap-2 font-mono">
-                    <span className="text-3xl font-bold text-zinc-100 tabular-nums">
-                      <AnimatedMetric value={velocity?.tps ?? 0} precision={1} />
-                    </span>
-                    <span className="text-xs text-zinc-500">
-                      TPS (Tokens / Sec)
-                    </span>
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-baseline gap-2 font-mono">
+                      <span className="text-3xl font-semibold text-zinc-100 tabular-nums">
+                        <AnimatedMetric value={velocity?.tps ?? 0} precision={1} />
+                      </span>
+                      <span className="text-xs text-zinc-500">
+                        TPS
+                      </span>
+                    </div>
+
+                    {/* Subtle micro-pulse dot radar */}
+                    <RunawayRadar
+                      isRunaway={isRunaway}
+                      burnRateStatus={velocity?.burn_rate_status ?? "nominal"}
+                      reason={velocity?.reason}
+                      tps={velocity?.tps ?? 0}
+                      rpm={velocity?.rpm ?? 0}
+                    />
                   </div>
-                  <div className="flex items-center gap-3 text-[11px] font-mono text-zinc-400 mt-1 tabular-nums">
+
+                  <div className="flex items-center gap-3 text-[11px] font-mono text-zinc-500 mt-1 tabular-nums">
                     <span>TPM: <AnimatedMetric value={velocity?.tpm ?? 0} precision={0} /></span>
                     <span>•</span>
                     <span>RPM: <AnimatedMetric value={velocity?.rpm ?? 0} precision={1} /> req/min</span>
@@ -761,20 +774,22 @@ export default function Home() {
                 </div>
 
                 {/* Tripwire Status Pill */}
-                <div className="pt-2">
+                <div className="pt-1">
                   <div className={`p-2.5 rounded-lg border text-xs font-mono flex items-center justify-between transition-colors ${
                     isRunaway
-                      ? "bg-rose-500/20 border-rose-500 text-rose-300 font-bold"
-                      : "bg-emerald-500/10 border-emerald-500/30 text-emerald-400"
+                      ? "bg-rose-500/15 border-rose-500/40 text-rose-300 font-bold animate-pulse"
+                      : "bg-zinc-900/40 border-zinc-800/80 text-zinc-400"
                   }`}>
                     <span>Loop Tripwire:</span>
-                    <span className="uppercase">{isRunaway ? "RUNAWAY DETECTED" : "NOMINAL"}</span>
+                    <span className={isRunaway ? "uppercase text-rose-400 font-bold" : "uppercase text-zinc-500 font-medium"}>
+                      {isRunaway ? "RUNAWAY DETECTED" : "NOMINAL"}
+                    </span>
                   </div>
                 </div>
 
                 <div className="border-t border-zinc-800/80 pt-3 flex items-center justify-between text-[11px] font-mono text-zinc-400">
-                  <span>Threshold Limit:</span>
-                  <span className="text-zinc-200 tabular-nums">
+                  <span className="text-zinc-500">Threshold Limit:</span>
+                  <span className="text-zinc-300 tabular-nums">
                     {config?.velocity_alert_tps ?? 150} TPS / {config?.velocity_alert_rpm ?? 45} RPM
                   </span>
                 </div>
@@ -829,7 +844,7 @@ export default function Home() {
                 {/* Chart 1: TDI & Wired VRAM */}
                 <SparklineStream
                   data={tdiChartData}
-                  color="#10b981"
+                  color={tdiSparklineColor}
                   unit="TDI"
                   minVal={0}
                   maxVal={1.0}
@@ -843,7 +858,7 @@ export default function Home() {
                 {/* Chart 2: Token Velocity (TPS) */}
                 <SparklineStream
                   data={tpsChartData}
-                  color="#6366f1"
+                  color={tpsSparklineColor}
                   unit="TPS"
                   minVal={0}
                   warningLine={config?.velocity_alert_tps ?? 150}
@@ -1048,63 +1063,149 @@ export default function Home() {
         )}
 
         {/* ══════════════════════════════════════════════════════════════════
-           TAB 5: CONFIG & PREFERENCES
+           TAB 5: CONFIG & PREFERENCES (macOS PREFERENCES / RAYCAST MODAL)
         ══════════════════════════════════════════════════════════════════ */}
         {activeTab === "config" && (
           <motion.div
             variants={containerVariants}
             initial="hidden"
             animate="show"
-            className="space-y-4"
+            className="max-w-4xl mx-auto space-y-6"
           >
-            <div>
-              <h3 className="text-sm font-mono font-semibold text-zinc-100">
-                Zero-Dependency User Preferences (~/.sentinel/config.json)
-              </h3>
-              <p className="text-xs font-mono text-zinc-500">
-                Active thresholds loaded by Sentinel-AI configuration engine.
-              </p>
+            {/* Header */}
+            <div className="flex items-center justify-between pb-2 border-b border-zinc-800/80">
+              <div>
+                <h3 className="text-sm font-semibold tracking-tight text-zinc-100">
+                  Sentinel Preferences
+                </h3>
+                <p className="text-xs text-zinc-500 font-mono mt-0.5">
+                  Daemon telemetry rules, tripwire thresholds, and gateway preferences loaded from ~/.sentinel/config.json
+                </p>
+              </div>
+              <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-zinc-800/80 text-zinc-400 border border-zinc-700/60">
+                Zero-Dependency LRU Cache
+              </span>
             </div>
 
-            <motion.div variants={itemVariants} className="telemetry-card p-5 space-y-4 font-mono text-xs">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div className="p-3 rounded bg-zinc-800/40 border border-zinc-800">
-                  <span className="text-zinc-500">proxy_url:</span>
-                  <div className="text-zinc-200 font-semibold mt-1">{config?.proxy_url ?? "http://localhost:20128"}</div>
-                </div>
-                <div className="p-3 rounded bg-zinc-800/40 border border-zinc-800">
-                  <span className="text-zinc-500">poll_interval_seconds:</span>
-                  <div className="text-zinc-200 font-semibold mt-1">{config?.poll_interval_seconds ?? 1.0}s</div>
-                </div>
-                <div className="p-3 rounded bg-zinc-800/40 border border-zinc-800">
-                  <span className="text-zinc-500">tdi_warning_threshold:</span>
-                  <div className="text-amber-400 font-semibold mt-1">{config?.tdi_warning_threshold ?? 0.75}</div>
-                </div>
-                <div className="p-3 rounded bg-zinc-800/40 border border-zinc-800">
-                  <span className="text-zinc-500">tdi_critical_threshold:</span>
-                  <div className="text-rose-400 font-semibold mt-1">{config?.tdi_critical_threshold ?? 0.90}</div>
-                </div>
-                <div className="p-3 rounded bg-zinc-800/40 border border-zinc-800">
-                  <span className="text-zinc-500">velocity_alert_tps:</span>
-                  <div className="text-indigo-400 font-semibold mt-1">{config?.velocity_alert_tps ?? 150.0} TPS</div>
-                </div>
-                <div className="p-3 rounded bg-zinc-800/40 border border-zinc-800">
-                  <span className="text-zinc-500">velocity_alert_rpm:</span>
-                  <div className="text-indigo-400 font-semibold mt-1">{config?.velocity_alert_rpm ?? 45.0} RPM</div>
-                </div>
-                <div className="p-3 rounded bg-zinc-800/40 border border-zinc-800">
-                  <span className="text-zinc-500">swap_limit_ratio:</span>
-                  <div className="text-cyan-400 font-semibold mt-1">{config?.swap_limit_ratio ?? 0.25} (25% RAM)</div>
-                </div>
-                <div className="p-3 rounded bg-zinc-800/40 border border-zinc-800">
-                  <span className="text-zinc-500">notification_debounce_seconds:</span>
-                  <div className="text-zinc-200 font-semibold mt-1">{config?.notification_debounce_seconds ?? 60.0}s</div>
-                </div>
+            {/* Group 1: Gateway & Polling */}
+            <motion.div variants={itemVariants} className="telemetry-card overflow-hidden">
+              <div className="px-4 py-2.5 bg-zinc-900/60 border-b border-zinc-800/80 flex items-center justify-between">
+                <span className="text-xs font-mono font-semibold uppercase tracking-wider text-zinc-300">
+                  Gateway &amp; Polling
+                </span>
+                <span className="text-[10px] font-mono text-zinc-500">I/O Cadence</span>
               </div>
+              <div className="divide-y divide-zinc-800/50 text-xs">
+                <div className="px-4 py-3 flex items-center justify-between gap-4">
+                  <div>
+                    <div className="font-medium text-zinc-200">OmniRoute Proxy URL</div>
+                    <div className="text-[11px] text-zinc-500 mt-0.5">Reverse proxy gateway intercepting local AI agent tokens</div>
+                  </div>
+                  <span className="font-mono text-xs px-2.5 py-1 rounded bg-zinc-800/80 border border-zinc-700/60 text-zinc-300 tabular-nums">
+                    {config?.proxy_url ?? "http://localhost:20128"}
+                  </span>
+                </div>
 
-              <div className="pt-2 text-zinc-500 text-[11px]">
-                To modify these preferences, edit <code className="text-zinc-300">~/.sentinel/config.json</code> in any text editor.
+                <div className="px-4 py-3 flex items-center justify-between gap-4">
+                  <div>
+                    <div className="font-medium text-zinc-200">Mach Telemetry Polling Interval</div>
+                    <div className="text-[11px] text-zinc-500 mt-0.5">Kernel C-bindings sampling frequency for physical &amp; swap statistics</div>
+                  </div>
+                  <span className="font-mono text-xs px-2.5 py-1 rounded bg-zinc-800/80 border border-zinc-700/60 text-zinc-300 tabular-nums">
+                    {config?.poll_interval_seconds ?? 1.0}s
+                  </span>
+                </div>
+
+                <div className="px-4 py-3 flex items-center justify-between gap-4">
+                  <div>
+                    <div className="font-medium text-zinc-200">Notification Debounce Window</div>
+                    <div className="text-[11px] text-zinc-500 mt-0.5">Minimum quiet period between consecutive macOS native banner notifications</div>
+                  </div>
+                  <span className="font-mono text-xs px-2.5 py-1 rounded bg-zinc-800/80 border border-zinc-700/60 text-zinc-300 tabular-nums">
+                    {config?.notification_debounce_seconds ?? 60.0}s
+                  </span>
+                </div>
               </div>
+            </motion.div>
+
+            {/* Group 2: Tripwires & Thresholds */}
+            <motion.div variants={itemVariants} className="telemetry-card overflow-hidden">
+              <div className="px-4 py-2.5 bg-zinc-900/60 border-b border-zinc-800/80 flex items-center justify-between">
+                <span className="text-xs font-mono font-semibold uppercase tracking-wider text-zinc-300">
+                  Tripwires &amp; Thresholds
+                </span>
+                <span className="text-[10px] font-mono text-zinc-500">Heuristic Limits</span>
+              </div>
+              <div className="divide-y divide-zinc-800/50 text-xs">
+                <div className="px-4 py-3 flex items-center justify-between gap-4">
+                  <div>
+                    <div className="font-medium text-zinc-200">TDI Elevated Warning Level</div>
+                    <div className="text-[11px] text-zinc-500 mt-0.5">Thrash Danger Index boundary triggering amber visual alert state</div>
+                  </div>
+                  <span className="font-mono text-xs px-2.5 py-1 rounded bg-amber-500/10 border border-amber-500/30 text-amber-400 tabular-nums font-semibold">
+                    {config?.tdi_warning_threshold ?? 0.75}
+                  </span>
+                </div>
+
+                <div className="px-4 py-3 flex items-center justify-between gap-4">
+                  <div>
+                    <div className="font-medium text-zinc-200">TDI Critical Starvation Level</div>
+                    <div className="text-[11px] text-zinc-500 mt-0.5">Severe thrash danger threshold triggering kill/throttle intervention</div>
+                  </div>
+                  <span className="font-mono text-xs px-2.5 py-1 rounded bg-rose-500/10 border border-rose-500/30 text-rose-400 tabular-nums font-semibold">
+                    {config?.tdi_critical_threshold ?? 0.90}
+                  </span>
+                </div>
+
+                <div className="px-4 py-3 flex items-center justify-between gap-4">
+                  <div>
+                    <div className="font-medium text-zinc-200">Token Velocity Limit (TPS)</div>
+                    <div className="text-[11px] text-zinc-500 mt-0.5">Sliding 60-second window token burn rate triggering runaway tripwire</div>
+                  </div>
+                  <span className="font-mono text-xs px-2.5 py-1 rounded bg-zinc-800/80 border border-zinc-700/60 text-zinc-300 tabular-nums">
+                    {config?.velocity_alert_tps ?? 150.0} TPS
+                  </span>
+                </div>
+
+                <div className="px-4 py-3 flex items-center justify-between gap-4">
+                  <div>
+                    <div className="font-medium text-zinc-200">Request Velocity Limit (RPM)</div>
+                    <div className="text-[11px] text-zinc-500 mt-0.5">Sliding 60-second window request frequency triggering runaway tripwire</div>
+                  </div>
+                  <span className="font-mono text-xs px-2.5 py-1 rounded bg-zinc-800/80 border border-zinc-700/60 text-zinc-300 tabular-nums">
+                    {config?.velocity_alert_rpm ?? 45.0} RPM
+                  </span>
+                </div>
+              </div>
+            </motion.div>
+
+            {/* Group 3: Hardware Memory Limits */}
+            <motion.div variants={itemVariants} className="telemetry-card overflow-hidden">
+              <div className="px-4 py-2.5 bg-zinc-900/60 border-b border-zinc-800/80 flex items-center justify-between">
+                <span className="text-xs font-mono font-semibold uppercase tracking-wider text-zinc-300">
+                  Hardware Memory Limits
+                </span>
+                <span className="text-[10px] font-mono text-zinc-500">Apple Silicon Allocation</span>
+              </div>
+              <div className="divide-y divide-zinc-800/50 text-xs">
+                <div className="px-4 py-3 flex items-center justify-between gap-4">
+                  <div>
+                    <div className="font-medium text-zinc-200">Dynamic Swap Ceiling Ratio</div>
+                    <div className="text-[11px] text-zinc-500 mt-0.5">Allocated swap bound calibrated as fraction of hw.memsize (min 2,048 MB)</div>
+                  </div>
+                  <span className="font-mono text-xs px-2.5 py-1 rounded bg-zinc-800/80 border border-zinc-700/60 text-zinc-300 tabular-nums">
+                    {((config?.swap_limit_ratio ?? 0.25) * 100).toFixed(0)}% RAM ({fmtMB(dynamicSwapCeilingMB)})
+                  </span>
+                </div>
+              </div>
+            </motion.div>
+
+            {/* macOS Preferences Footer Tip */}
+            <motion.div variants={itemVariants} className="p-3.5 rounded-lg bg-zinc-900/40 border border-zinc-800/80 text-[11px] font-mono text-zinc-500 flex items-center gap-2.5">
+              <Info className="w-4 h-4 text-zinc-400 shrink-0" />
+              <span>
+                To configure overrides, edit <code className="text-zinc-300 px-1 py-0.5 rounded bg-zinc-800 border border-zinc-700">~/.sentinel/config.json</code>. Changes reload automatically via zero-overhead LRU cache.
+              </span>
             </motion.div>
           </motion.div>
         )}

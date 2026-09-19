@@ -1,9 +1,9 @@
 /**
- * web/components/TDIRadialMeter.tsx
+ * web/src/components/TDIRadialMeter.tsx
  *
- * Motion-driven SVG semi-circular arc gauge for the Thrash Danger Index (TDI).
- * Animates strokeDashoffset via framer-motion with duration: 0.7s to settle before the next 1Hz tick.
- * Features a glowing background layer shifting from Emerald to Amber to Crimson.
+ * Minimalist Linear/Apple precision radial ring gauge for Thrash Danger Index (TDI).
+ * Ultra-thin 4px SVG precision arc with neutral zinc styling during idle state.
+ * Color only surfaces under elevated pressure (amber at >=0.75, crimson at >=0.90).
  */
 
 import React from "react";
@@ -17,112 +17,116 @@ interface TDIRadialMeterProps {
 export function TDIRadialMeter({ tdi }: TDIRadialMeterProps) {
   const clamped = Math.max(0, Math.min(1, tdi));
 
-  // Color dynamic interpolation
-  const color = clamped >= 0.90 ? "#f43f5e" : clamped >= 0.75 ? "#f59e0b" : "#10b981";
-  const glowColor = clamped >= 0.90 ? "rgba(244, 63, 94, 0.45)" : clamped >= 0.75 ? "rgba(245, 158, 11, 0.35)" : "rgba(16, 185, 129, 0.25)";
-  const statusLabel = clamped >= 0.90 ? "CRITICAL THRASH IMMINENT" : clamped >= 0.75 ? "ELEVATED PRESSURE WARNING" : "NOMINAL TELEMETRY";
+  // Color discipline: neutral zinc below 0.50, amber at 0.75, crimson at 0.90
+  const isCritical = clamped >= 0.90;
+  const isWarning = clamped >= 0.75 && clamped < 0.90;
+  const isModerate = clamped >= 0.50 && clamped < 0.75;
 
-  // Semi-circle Arc parameters: Radius 85, Center (120, 115)
-  // Arc spans from 180° (x: 35, y: 115) to 0° (x: 205, y: 115)
-  const radius = 85;
-  const strokeWidth = 14;
-  const arcLength = Math.PI * radius; // ~267.035
+  const strokeColor = isCritical
+    ? "#f43f5e"
+    : isWarning
+    ? "#f59e0b"
+    : isModerate
+    ? "#a1a1aa"
+    : "#71717a";
+
+  const numColor = isCritical
+    ? "text-rose-400"
+    : isWarning
+    ? "text-amber-400"
+    : "text-zinc-100";
+
+  const statusText = isCritical
+    ? "Critical Thrash"
+    : isWarning
+    ? "Pressure Warning"
+    : isModerate
+    ? "Elevated"
+    : "Nominal";
+
+  const statusBadge = isCritical
+    ? "text-rose-400 border-rose-500/40 bg-rose-500/10 animate-pulse"
+    : isWarning
+    ? "text-amber-400 border-amber-500/30 bg-amber-500/10"
+    : isModerate
+    ? "text-zinc-300 border-zinc-700/60 bg-zinc-800/40"
+    : "text-zinc-500 border-zinc-800/80 bg-zinc-900/40";
+
+  // Precision 240° arc parameters: Center (80, 72), Radius 54
+  // Arc length = (240 / 360) * 2 * PI * 54 = 226.195
+  const arcLength = 226.2;
   const strokeDashoffset = arcLength * (1 - clamped);
 
   return (
-    <div className="relative flex flex-col items-center justify-center p-4 select-none">
-      <svg
-        viewBox="0 0 240 140"
-        className="w-full max-w-[280px] overflow-visible"
-        aria-label={`Thrash Danger Index: ${(clamped * 100).toFixed(1)}%`}
-      >
-        <defs>
-          <filter id="tdi-glow" x="-30%" y="-30%" width="160%" height="160%">
-            <feGaussianBlur stdDeviation="8" result="blur" />
-            <feComposite in="SourceGraphic" in2="blur" operator="over" />
-          </filter>
-        </defs>
-
-        {/* Inactive Background Track Arc */}
-        <path
-          d="M 35 115 A 85 85 0 0 1 205 115"
-          fill="none"
-          stroke="#27272a"
-          strokeWidth={strokeWidth}
-          strokeLinecap="round"
-        />
-
-        {/* Graduations / Threshold tick marks */}
-        <path
-          d="M 35 115 A 85 85 0 0 1 205 115"
-          fill="none"
-          stroke="rgba(255,255,255,0.08)"
-          strokeWidth={strokeWidth}
-          strokeDasharray="2 12"
-        />
-
-        {/* Glowing layer behind active stroke */}
-        <motion.path
-          d="M 35 115 A 85 85 0 0 1 205 115"
-          fill="none"
-          stroke={color}
-          strokeWidth={strokeWidth + 6}
-          strokeLinecap="round"
-          strokeDasharray={arcLength}
-          animate={{
-            strokeDashoffset,
-            stroke: color,
-            opacity: clamped >= 0.75 ? 0.65 : 0.25,
-          }}
-          transition={{ duration: 0.7, ease: "easeOut" }}
-          filter="url(#tdi-glow)"
-        />
-
-        {/* Active Primary Meter Arc */}
-        <motion.path
-          d="M 35 115 A 85 85 0 0 1 205 115"
-          fill="none"
-          stroke={color}
-          strokeWidth={strokeWidth}
-          strokeLinecap="round"
-          strokeDasharray={arcLength}
-          animate={{
-            strokeDashoffset,
-            stroke: color,
-          }}
-          transition={{ duration: 0.7, ease: "easeOut" }}
-        />
-
-        {/* Scale labels */}
-        <text x="35" y="134" textAnchor="middle" className="text-[10px] font-mono fill-zinc-500">0.0</text>
-        <text x="120" y="24" textAnchor="middle" className="text-[10px] font-mono fill-zinc-500">0.5</text>
-        <text x="176" y="48" textAnchor="middle" className="text-[10px] font-mono fill-amber-500/90 font-semibold">0.75</text>
-        <text x="205" y="134" textAnchor="middle" className="text-[10px] font-mono fill-zinc-500">1.0</text>
-      </svg>
-
-      {/* Central Readout */}
-      <div className="absolute top-[46px] flex flex-col items-center text-center pointer-events-none">
-        <span className="text-[11px] font-mono uppercase tracking-widest text-zinc-400 font-medium">
-          Thrash Index
-        </span>
-        <div
-          className="text-4xl sm:text-5xl font-mono font-bold tracking-tight mt-0.5"
-          style={{ color, textShadow: `0 0 24px ${glowColor}` }}
+    <div className="relative flex flex-col items-center justify-center select-none py-1">
+      <div className="relative w-48 h-40 flex items-center justify-center">
+        <svg
+          viewBox="0 0 160 144"
+          className="w-full h-full overflow-visible"
+          aria-label={`Thrash Danger Index: ${(clamped * 100).toFixed(1)}%`}
         >
-          <AnimatedMetric value={clamped} precision={2} />
+          <defs>
+            {/* Subtle glow filter only activated during critical thrash states */}
+            {isCritical && (
+              <filter id="tdi-alert-glow" x="-20%" y="-20%" width="140%" height="140%">
+                <feGaussianBlur stdDeviation="3" result="blur" />
+                <feComposite in="SourceGraphic" in2="blur" operator="over" />
+              </filter>
+            )}
+          </defs>
+
+          {/* Precision 4px Inactive Background Track */}
+          <path
+            d="M 33.2 99 A 54 54 0 1 1 126.8 99"
+            fill="none"
+            stroke="#27272a"
+            strokeWidth={4}
+            strokeLinecap="round"
+          />
+
+          {/* Minimal Threshold Indicator Dots on Track */}
+          {/* 0.75 threshold mark */}
+          <circle cx="122.4" cy="45.5" r="1.5" fill="#3f3f46" />
+          {/* 0.90 threshold mark */}
+          <circle cx="126.5" cy="74.2" r="1.5" fill="#3f3f46" />
+
+          {/* Active Precision Stroke (stroke-width: 4px) */}
+          <motion.path
+            d="M 33.2 99 A 54 54 0 1 1 126.8 99"
+            fill="none"
+            stroke={strokeColor}
+            strokeWidth={4}
+            strokeLinecap="round"
+            strokeDasharray={arcLength}
+            animate={{
+              strokeDashoffset,
+              stroke: strokeColor,
+            }}
+            transition={{ duration: 0.7, ease: "easeOut" }}
+            filter={isCritical ? "url(#tdi-alert-glow)" : undefined}
+          />
+        </svg>
+
+        {/* Central High-Density Readout */}
+        <div className="absolute inset-0 flex flex-col items-center justify-center pt-2 pointer-events-none">
+          <span className="text-[10px] font-mono uppercase tracking-widest text-zinc-500 font-medium">
+            TDI
+          </span>
+          <div className={`font-mono text-3xl font-semibold tracking-tight tabular-nums ${numColor}`}>
+            <AnimatedMetric value={clamped} precision={2} />
+          </div>
+          <div className={`mt-1.5 px-2 py-0.5 rounded text-[10px] font-mono uppercase tracking-wider border ${statusBadge}`}>
+            {statusText}
+          </div>
         </div>
-        <motion.div
-          animate={{ scale: clamped >= 0.90 ? [1, 1.05, 1] : 1 }}
-          transition={{ repeat: clamped >= 0.90 ? Infinity : 0, duration: 1.2 }}
-          className="mt-1 px-2.5 py-0.5 rounded-full text-[10px] font-mono font-semibold uppercase tracking-wider border"
-          style={{
-            color,
-            borderColor: `${color}40`,
-            backgroundColor: `${color}15`,
-          }}
-        >
-          {statusLabel}
-        </motion.div>
+      </div>
+
+      {/* Subtle Scale Reference Footer */}
+      <div className="flex items-center justify-between w-44 text-[10px] font-mono text-zinc-500 px-2 -mt-2">
+        <span>0.0</span>
+        <span className={clamped >= 0.75 ? "text-amber-500/80 font-medium" : "text-zinc-600"}>0.75</span>
+        <span className={clamped >= 0.90 ? "text-rose-500/80 font-medium" : "text-zinc-600"}>0.90</span>
+        <span>1.0</span>
       </div>
     </div>
   );
