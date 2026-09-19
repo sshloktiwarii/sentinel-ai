@@ -13,6 +13,7 @@ This document records the foundational architectural and system design decisions
 - [ADR 005: Embedded Next.js Static Export within FastAPI over Standalone Node.js Runtime](#adr-005-embedded-nextjs-static-export-within-fastapi-over-standalone-nodejs-runtime)
 - [ADR 006: SQLite WAL Mode with Precomputed Aggregations over In-Memory Buffers or Heavy DBs](#adr-006-sqlite-wal-mode-with-precomputed-aggregations-over-in-memory-buffers-or-heavy-dbs)
 - [ADR 007: Dual Interface Architecture (Native Menu Bar + Rich Canvas)](#adr-007-dual-interface-architecture-native-menu-bar--rich-canvas)
+- [ADR 008: Zero-Dependency JSON User Preferences via `~/.sentinel/config.json`](#adr-008-zero-dependency-json-user-preferences-via-sentinelconfigjson)
 
 ---
 
@@ -248,3 +249,41 @@ Engineers monitoring unified memory and AI quota burn face conflicting UI requir
 ### Alternatives Considered
 - **Web Dashboard Only**: Rejected because engineers working in terminal/IDE workflows will not maintain an open browser window simply to watch for passive memory spikes.
 - **Menu Bar Only**: Rejected because complex multi-series time-series charts, spike distribution tables, and multi-provider quota matrices cannot be rendered effectively within a native macOS menu dropdown.
+
+---
+
+## ADR 008: Zero-Dependency JSON User Preferences via `~/.sentinel/config.json`
+
+### Decision
+Provide a zero-dependency user configuration engine powered by the Python standard library, storing user preferences in human-readable JSON format at `~/.sentinel/config.json`, with automated missing-file bootstrapping, fallback defaults, and graceful error recovery.
+
+### Context & Problem
+Different development setups have distinct operating characteristics and sensitivity requirements:
+1. **Custom Ports & Gateways**: Developers frequently run proxy multiplexers (like OmniRoute) on alternative ports or remote endpoints instead of `http://localhost:20128`.
+2. **Workload Variance**: High-throughput automated batch jobs (such as agentic code refactoring or local fine-tuning) generate expected bursts that trigger false runaway alerts under fixed, hardcoded thresholds (e.g., 150 TPS or 45 RPM).
+3. **Hardware Thrash Differences**: Different Apple Silicon chips (M1 base vs. M4 Max) and varying physical memory sizes benefit from adjustable TDI warning/critical limits and swap allocation ratios.
+4. **Zero Configuration Friction**: Prior to this change, modifying these thresholds required directly editing the application source code.
+
+### What It Does
+1. **Configuration Engine (`sentinel/config.py`)**:
+   Stores default system values for all operational thresholds:
+   - `proxy_url`: `"http://localhost:20128"`
+   - `poll_interval_seconds`: `1.0`
+   - `tdi_warning_threshold`: `0.75`
+   - `tdi_critical_threshold`: `0.90`
+   - `velocity_alert_tps`: `150.0`
+   - `velocity_alert_rpm`: `45.0`
+   - `notification_debounce_seconds`: `60.0`
+   - `swap_limit_ratio`: `0.25`
+2. **Automated Bootstrapping & Graceful Recovery**:
+   - If `~/.sentinel/config.json` does not exist, Sentinel-AI automatically generates it with formatted default JSON.
+   - If the user provides partial overrides, user values are deeply merged on top of `DEFAULT_CONFIG`.
+   - If `~/.sentinel/config.json` contains malformed or corrupt JSON, Sentinel-AI logs a warning and falls back to in-memory defaults without crashing.
+3. **Cached Access & Dynamic Reloading**:
+   - Access is optimized through `@functools.lru_cache(maxsize=1)` via `get_config()`.
+   - Invalidation is provided via `reload_config()`, supporting instant updates during runtime or testing.
+
+### Alternatives Considered
+- **Environment Variables**: Considered, but rejected as the primary configuration mechanism because environment variables are cumbersome to manage and persist across native macOS GUI apps, launchd LaunchAgents, and menu bar companions without shell wrappers.
+- **YAML or TOML File Formats**: Rejected because standard Python 3 does not include a built-in YAML parser (requiring PyYAML), and TOML write/dump support is not standard across all Python versions without third-party dependencies. JSON is natively supported by Python's standard library with zero external dependencies.
+- **SQLite Configuration Table**: Rejected because storing settings in SQLite makes quick inspection and manual editing with plain text editors tedious for developers.

@@ -20,6 +20,7 @@ from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnec
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+from sentinel.config import get_config
 from sentinel.database import get_history_window, get_spikes, init_db, insert_telemetry
 from sentinel.engines import get_local_engines_async
 from sentinel.harvester import (
@@ -43,7 +44,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+def get_alert_pill(tdi: float) -> str:
+    """Map Thrash Danger Index to alert pill color indicator based on config thresholds."""
+    cfg = get_config()
+    crit_th = float(cfg.get("tdi_critical_threshold", 0.90))
+    warn_th = float(cfg.get("tdi_warning_threshold", 0.75))
+    if tdi >= crit_th:
+        return "🔴"
+    elif tdi >= warn_th:
+        return "🟡"
+    return "🟢"
+
 
 def _collect_reading() -> dict:
     """Gather one telemetry snapshot and return it as a plain dict."""
@@ -63,6 +74,7 @@ def _collect_reading() -> dict:
         "swap_used_mb":     used_swap,
         "pageouts":         pageouts,
         "thrash_index":     thrash_index,
+        "alert_pill":       get_alert_pill(thrash_index),
         "engine_active":    engine_info.get("engine_active", False),
         "kv_cache_mb":      engine_info.get("kv_cache_mb", 0.0),
         "kv_pressure_pct":  engine_info.get("kv_pressure_pct", 0.0),
@@ -185,6 +197,14 @@ async def api_engines() -> dict:
     """Return active local LLM engine status, loaded models, and KV-cache breakdown."""
     wired_mb = await asyncio.get_event_loop().run_in_executor(None, get_wired_memory_mb)
     return await get_local_engines_async(wired_mb=wired_mb)
+
+
+# ── REST: config ──────────────────────────────────────────────────────────────
+
+@app.get("/api/config")
+async def api_config() -> dict:
+    """Return active user configuration."""
+    return get_config()
 
 
 # ── Static Frontend ──────────────────────────────────────────────────────────

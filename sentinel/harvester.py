@@ -18,6 +18,8 @@ import re
 import subprocess
 from typing import Any
 
+from sentinel.config import get_config
+
 logger = logging.getLogger("sentinel.harvester")
 
 __all__ = [
@@ -231,8 +233,9 @@ def get_total_physical_memory_mb() -> float:
 
 @functools.lru_cache(maxsize=1)
 def get_dynamic_swap_limit_mb() -> float:
-    """Return dynamic swap limit: max(2048.0, round(get_total_physical_memory_mb() * 0.25, 2))."""
-    return max(2048.0, round(get_total_physical_memory_mb() * 0.25, 2))
+    """Return dynamic swap limit based on user configuration swap_limit_ratio."""
+    ratio = float(get_config().get("swap_limit_ratio", 0.25))
+    return max(2048.0, round(get_total_physical_memory_mb() * ratio, 2))
 
 
 def get_physical_memory_bytes() -> int:

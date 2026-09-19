@@ -44,6 +44,8 @@ from typing import Literal
 
 import httpx
 
+from sentinel.config import get_config
+
 # ── Types ─────────────────────────────────────────────────────────────────────
 
 Status = Literal["healthy", "warning", "exhausted"]
@@ -195,10 +197,13 @@ class TokenVelocityTracker:
     def __init__(
         self,
         retention_seconds: float = 60.0,
-        debounce_seconds: float = 180.0,
+        debounce_seconds: float | None = None,
     ) -> None:
         self.retention_seconds = float(retention_seconds)
-        self.debounce_seconds = float(debounce_seconds)
+        if debounce_seconds is not None:
+            self.debounce_seconds = float(debounce_seconds)
+        else:
+            self.debounce_seconds = float(get_config().get("notification_debounce_seconds", 60.0))
         self._window: collections.deque[tuple[float, int, int]] = collections.deque()
 
         # Runaway loop tracking state
@@ -271,10 +276,14 @@ class TokenVelocityTracker:
         rpm = round((w_delta_req / w_dt) * 60.0, 1)
 
         # 4. Runaway Loop Detection Engine
-        # Condition A: Sustained high burn rate (tps > 150 for >= 15 consecutive seconds)
+        config = get_config()
+        alert_tps = float(config.get("velocity_alert_tps", 150.0))
+        alert_rpm = float(config.get("velocity_alert_rpm", 45.0))
+
+        # Condition A: Sustained high burn rate (tps > alert_tps for >= 15 consecutive seconds)
         runaway_a = False
         reason_a = None
-        if tps > 150.0:
+        if tps > alert_tps:
             if self._high_tps_start_ts is None:
                 self._high_tps_start_ts = t_prev
             duration_a = t_last - self._high_tps_start_ts
@@ -284,10 +293,10 @@ class TokenVelocityTracker:
         else:
             self._high_tps_start_ts = None
 
-        # Condition B: Request flood (rpm > 45 sustained with 0 backoff)
+        # Condition B: Request flood (rpm > alert_rpm sustained with 0 backoff)
         runaway_b = False
         reason_b = None
-        if rpm > 45.0:
+        if rpm > alert_rpm:
             if self._high_rpm_start_ts is None:
                 self._high_rpm_start_ts = t_first
             duration_b = t_last - self._high_rpm_start_ts
@@ -303,7 +312,7 @@ class TokenVelocityTracker:
         if runaway_detected:
             burn_rate_status = "runaway"
             if self._last_notification_ts == 0.0 or (t_last - self._last_notification_ts) >= self.debounce_seconds:
-                alert_msg = 'Agent runaway loop suspected (>150 TPS). Check active sessions.'
+                alert_msg = f'Agent runaway loop suspected (>{int(alert_tps)} TPS). Check active sessions.'
                 self.dispatch_notification(alert_msg)
                 self._last_notification_ts = t_last
         elif tps > 80.0 or rpm > 25.0:
@@ -508,7 +517,10 @@ def _probe_openai() -> dict:
 
 # ── OmniRoute Harvest & Mapping ───────────────────────────────────────────────
 
-OMNIROUTE_BASE = os.environ.get("OMNIROUTE_BASE", "http://localhost:20128").rstrip("/")
+def _get_proxy_url() -> str:
+    return os.environ.get("OMNIROUTE_BASE", get_config().get("proxy_url", "http://localhost:20128")).rstrip("/")
+
+OMNIROUTE_BASE = _get_proxy_url()
 _OMNIROUTE_CACHE_TS: float = 0.0
 _OMNIROUTE_CACHE: dict[str, dict] = {}
 _OMNIROUTE_TTL = 15.0
@@ -644,7 +656,7 @@ async def _probe_omniroute_async() -> dict[str, dict]:
         return deepcopy(_OMNIROUTE_CACHE)
 
     token = _get_omniroute_token()
-    base_url = os.environ.get("OMNIROUTE_BASE", OMNIROUTE_BASE).rstrip("/")
+    base_url = _get_proxy_url()
     headers = {"Accept": "application/json"}
     if token:
         headers["Authorization"] = f"Bearer {token}"
@@ -757,7 +769,7 @@ def _probe_omniroute_sync() -> dict[str, dict]:
         return deepcopy(_OMNIROUTE_CACHE)
 
     token = _get_omniroute_token()
-    base_url = os.environ.get("OMNIROUTE_BASE", OMNIROUTE_BASE).rstrip("/")
+    base_url = _get_proxy_url()
     headers = {"Accept": "application/json"}
     if token:
         headers["Authorization"] = f"Bearer {token}"

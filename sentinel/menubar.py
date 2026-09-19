@@ -18,6 +18,8 @@ from typing import Any
 
 import rumps
 
+from sentinel.config import get_config
+
 # ── Alert constants ───────────────────────────────────────────────────────────
 TDI_ALERT_THRESHOLD = 0.75
 SWAP_ALERT_THRESHOLD_MB = 512.0
@@ -76,8 +78,22 @@ class SentinelMenuBarApp(rumps.App):
         self.timer.start()
 
     @staticmethod
-    def get_status_icon(tdi: float) -> str:
+    def get_alert_pill(tdi: float) -> str:
+        """Map Thrash Danger Index to alert pill color indicator based on config thresholds."""
+        cfg = get_config()
+        crit = float(cfg.get("tdi_critical_threshold", 0.90))
+        warn = float(cfg.get("tdi_warning_threshold", 0.75))
+        if tdi >= crit:
+            return "🔴"
+        elif tdi >= warn:
+            return "🟡"
+        return "🟢"
+
+    @staticmethod
+    def get_status_icon(tdi: float, use_config: bool = False) -> str:
         """Map Thrash Danger Index to visual status indicator."""
+        if use_config:
+            return SentinelMenuBarApp.get_alert_pill(tdi)
         if tdi < 0.30:
             return "🟢"
         if tdi < 0.70:
@@ -172,7 +188,10 @@ class SentinelMenuBarApp(rumps.App):
         triggered_alerts: list[str] = []
 
         # 1. Check TDI threshold
-        if tdi >= TDI_ALERT_THRESHOLD:
+        config = get_config()
+        tdi_threshold = float(config.get("tdi_warning_threshold", TDI_ALERT_THRESHOLD))
+
+        if tdi >= tdi_threshold:
             if (current_time - self._last_tdi_alert) >= DEBOUNCE_INTERVAL_SEC:
                 msg = f"System memory pressure critical (TDI: {tdi:.2f}). Thrash imminent."
                 self.dispatch_notification(msg)
