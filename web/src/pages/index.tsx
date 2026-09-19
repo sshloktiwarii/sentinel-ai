@@ -1,9 +1,9 @@
 /**
  * web/src/pages/index.tsx
  *
- * Sentinel-AI — High-Density Telemetry & Agent Quota Canvas
+ * Sentinel-AI — Motion-Driven Telemetry & Agent Quota Canvas
  * Linear / Raycast inspired design language with deep zinc palette (#09090b),
- * real-time SVG radial gauges, 60s sliding ring buffer sparklines, and zero-flicker tabular numerals.
+ * framer-motion staggered container, TDIRadialMeter, RunawayRadar, and smooth SparklineStream.
  */
 
 import React, {
@@ -14,13 +14,13 @@ import React, {
   useMemo,
 } from "react";
 import Head from "next/head";
+import { motion, AnimatePresence } from "framer-motion";
 import {
   Activity,
   Cpu,
   Zap,
   HardDrive,
   Shield,
-  ShieldAlert,
   Play,
   Pause,
   RotateCw,
@@ -29,11 +29,13 @@ import {
   Layers,
   AlertTriangle,
   Server,
-  ArrowUpRight,
-  CheckCircle2,
   Sliders,
-  ExternalLink,
 } from "lucide-react";
+
+import { TDIRadialMeter } from "@/components/TDIRadialMeter";
+import { AnimatedMetric } from "@/components/AnimatedMetric";
+import { RunawayRadar } from "@/components/RunawayRadar";
+import { SparklineStream } from "@/components/SparklineStream";
 
 /* ── Constants & Endpoints ────────────────────────────────────────────── */
 const API_BASE = "http://127.0.0.1:8000";
@@ -41,6 +43,30 @@ const WS_URL   = "ws://127.0.0.1:8000/ws/telemetry";
 const MAX_LIVE_POINTS = 60;
 const BASE_RETRY_MS   = 1000;
 const MAX_RETRY_MS    = 16000;
+
+/* ── Animation Variants ───────────────────────────────────────────────── */
+const containerVariants = {
+  hidden: { opacity: 0 },
+  show: {
+    opacity: 1,
+    transition: {
+      staggerChildren: 0.08,
+      delayChildren: 0.04,
+    },
+  },
+};
+
+const itemVariants = {
+  hidden: { opacity: 0, y: 8 },
+  show: {
+    opacity: 1,
+    y: 0,
+    transition: {
+      duration: 0.4,
+      ease: [0.16, 1, 0.3, 1] as [number, number, number, number],
+    },
+  },
+};
 
 /* ── Types ────────────────────────────────────────────────────────────── */
 type ConnectionStatus = "connected" | "reconnecting" | "disconnected";
@@ -159,297 +185,6 @@ function toChartPoint(f: TelemetryFrame): ChartPoint {
     tps: f.velocity?.tps ?? 0,
     rpm: f.velocity?.rpm ?? 0,
   };
-}
-
-/* ══════════════════════════════════════════════════════════════════════
-   HERO RADIAL GAUGE COMPONENT (SVG Semi-Circle Arc)
-══════════════════════════════════════════════════════════════════════ */
-function TDIRadialGauge({ tdi }: { tdi: number }) {
-  const clamped = Math.max(0, Math.min(1, tdi));
-  
-  // Color dynamic interpolation
-  const color = clamped >= 0.90 ? "#f43f5e" : clamped >= 0.75 ? "#f59e0b" : "#10b981";
-  const glowColor = clamped >= 0.90 ? "rgba(244, 63, 94, 0.4)" : clamped >= 0.75 ? "rgba(245, 158, 11, 0.3)" : "rgba(16, 185, 129, 0.25)";
-  const statusLabel = clamped >= 0.90 ? "CRITICAL THRASH IMMINENT" : clamped >= 0.75 ? "ELEVATED PRESSURE WARNING" : "NOMINAL TELEMETRY";
-
-  // Semi-circle Arc parameters: Radius 85, Center (120, 110), Path from (-85, 0) to (85, 0)
-  const radius = 85;
-  const strokeWidth = 14;
-  const arcLength = Math.PI * radius; // ~267.035
-  const strokeDashoffset = arcLength * (1 - clamped);
-
-  return (
-    <div className="relative flex flex-col items-center justify-center p-4 select-none">
-      <svg
-        viewBox="0 0 240 140"
-        className="w-full max-w-[280px] overflow-visible"
-        aria-label={`Thrash Danger Index: ${(clamped * 100).toFixed(1)}%`}
-      >
-        <defs>
-          <filter id="tdi-glow" x="-20%" y="-20%" width="140%" height="140%">
-            <feGaussianBlur stdDeviation="6" result="blur" />
-            <feComposite in="SourceGraphic" in2="blur" operator="over" />
-          </filter>
-        </defs>
-
-        {/* Background Track Arc */}
-        <path
-          d="M 35 120 A 85 85 0 0 1 205 120"
-          fill="none"
-          stroke="#27272a"
-          strokeWidth={strokeWidth}
-          strokeLinecap="round"
-        />
-
-        {/* Warning Threshold Line Marker at 0.75 (angle: 180 - 0.75*180 = 45 deg) */}
-        {/* Critical Threshold Line Marker at 0.90 (angle: 180 - 0.90*180 = 18 deg) */}
-        <path
-          d="M 35 120 A 85 85 0 0 1 205 120"
-          fill="none"
-          stroke="rgba(255,255,255,0.06)"
-          strokeWidth={strokeWidth}
-          strokeDasharray="2 12"
-        />
-
-        {/* Active Meter Arc */}
-        <path
-          d="M 35 120 A 85 85 0 0 1 205 120"
-          fill="none"
-          stroke={color}
-          strokeWidth={strokeWidth}
-          strokeLinecap="round"
-          strokeDasharray={arcLength}
-          strokeDashoffset={strokeDashoffset}
-          filter={clamped >= 0.75 ? "url(#tdi-glow)" : undefined}
-          className="gauge-track"
-        />
-
-        {/* Scale labels */}
-        <text x="32" y="136" textAnchor="middle" className="text-[10px] font-mono fill-zinc-500">0.0</text>
-        <text x="120" y="32" textAnchor="middle" className="text-[10px] font-mono fill-zinc-500">0.5</text>
-        <text x="175" y="55" textAnchor="middle" className="text-[10px] font-mono fill-amber-500/80">0.75</text>
-        <text x="208" y="136" textAnchor="middle" className="text-[10px] font-mono fill-zinc-500">1.0</text>
-      </svg>
-
-      {/* Central Numeric Readout */}
-      <div className="absolute top-[52px] flex flex-col items-center text-center">
-        <div className="text-[11px] font-mono uppercase tracking-widest text-zinc-400 font-medium">
-          Thrash Index
-        </div>
-        <div
-          className="text-4xl sm:text-5xl font-mono font-bold tracking-tight tabular-nums mt-0.5"
-          style={{ color, textShadow: `0 0 20px ${glowColor}` }}
-        >
-          {clamped.toFixed(2)}
-        </div>
-        <div
-          className="mt-1 px-2.5 py-0.5 rounded-full text-[10px] font-mono font-semibold uppercase tracking-wider border"
-          style={{
-            color,
-            borderColor: `${color}40`,
-            backgroundColor: `${color}15`,
-          }}
-        >
-          {statusLabel}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/* ══════════════════════════════════════════════════════════════════════
-   HIGH-PRECISION SVG SPARKLINE COMPONENT
-══════════════════════════════════════════════════════════════════════ */
-function TelemetrySparkline({
-  data,
-  dataKey,
-  color,
-  unit,
-  minVal = 0,
-  maxVal,
-  warningLine,
-  criticalLine,
-  title,
-  currentVal,
-}: {
-  data: ChartPoint[];
-  dataKey: keyof ChartPoint;
-  color: string;
-  unit: string;
-  minVal?: number;
-  maxVal?: number;
-  warningLine?: number;
-  criticalLine?: number;
-  title: string;
-  currentVal?: string | number;
-}) {
-  const [hoverIndex, setHoverIndex] = useState<number | null>(null);
-
-  const points = useMemo(() => {
-    if (!data || data.length === 0) return [];
-    return data.map((d) => Number(d[dataKey]) || 0);
-  }, [data, dataKey]);
-
-  const height = 120;
-  const width = 600;
-  const padTop = 15;
-  const padBottom = 20;
-  const padLeft = 10;
-  const padRight = 10;
-  const chartH = height - padTop - padBottom;
-  const chartW = width - padLeft - padRight;
-
-  const yMax = useMemo(() => {
-    if (maxVal !== undefined) return maxVal;
-    const computedMax = Math.max(...points, 0.001);
-    return computedMax * 1.15;
-  }, [points, maxVal]);
-
-  const yMin = minVal;
-
-  const getX = (idx: number, total: number) => {
-    if (total <= 1) return padLeft;
-    return padLeft + (idx / (total - 1)) * chartW;
-  };
-
-  const getY = (val: number) => {
-    const norm = Math.max(0, Math.min(1, (val - yMin) / (yMax - yMin)));
-    return padTop + (1 - norm) * chartH;
-  };
-
-  // Build SVG Path
-  const { pathD, areaD, coords } = useMemo(() => {
-    if (points.length === 0) return { pathD: "", areaD: "", coords: [] };
-    const pts = points.map((val, i) => ({
-      x: getX(i, points.length),
-      y: getY(val),
-      val,
-      time: data[i]?.t || "",
-    }));
-
-    const pathString = pts.reduce((acc, p, i) => {
-      return i === 0 ? `M ${p.x.toFixed(1)} ${p.y.toFixed(1)}` : `${acc} L ${p.x.toFixed(1)} ${p.y.toFixed(1)}`;
-    }, "");
-
-    const areaString = `${pathString} L ${pts[pts.length - 1].x.toFixed(1)} ${(padTop + chartH).toFixed(1)} L ${pts[0].x.toFixed(1)} ${(padTop + chartH).toFixed(1)} Z`;
-
-    return { pathD: pathString, areaD: areaString, coords: pts };
-  }, [points, yMax, yMin, data]);
-
-  const hoveredPoint = hoverIndex !== null && coords[hoverIndex] ? coords[hoverIndex] : null;
-
-  return (
-    <div className="telemetry-card p-4 flex flex-col justify-between">
-      {/* Sparkline Header */}
-      <div className="flex items-center justify-between mb-2">
-        <div className="flex items-center gap-2">
-          <div className="w-2 h-2 rounded-full" style={{ backgroundColor: color }} />
-          <span className="text-xs font-mono uppercase tracking-wider text-zinc-400 font-medium">
-            {title}
-          </span>
-        </div>
-        <div className="flex items-baseline gap-1.5 font-mono">
-          <span className="text-lg font-bold text-zinc-100 tabular-nums">
-            {hoveredPoint ? hoveredPoint.val.toFixed(2) : (currentVal ?? "—")}
-          </span>
-          <span className="text-xs text-zinc-500">{unit}</span>
-          {hoveredPoint && (
-            <span className="text-[10px] text-zinc-400 ml-2 px-1.5 py-0.5 rounded bg-zinc-800 border border-zinc-700">
-              {hoveredPoint.time}
-            </span>
-          )}
-        </div>
-      </div>
-
-      {/* SVG Canvas */}
-      <div className="relative w-full h-[120px]">
-        {points.length > 1 ? (
-          <svg
-            viewBox={`0 0 ${width} ${height}`}
-            preserveAspectRatio="none"
-            className="w-full h-full cursor-crosshair overflow-visible"
-            onMouseLeave={() => setHoverIndex(null)}
-            onMouseMove={(e) => {
-              const rect = e.currentTarget.getBoundingClientRect();
-              const relX = (e.clientX - rect.left) / rect.width;
-              const idx = Math.round(relX * (points.length - 1));
-              setHoverIndex(Math.max(0, Math.min(points.length - 1, idx)));
-            }}
-          >
-            <defs>
-              <linearGradient id={`grad-${dataKey}`} x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor={color} stopOpacity="0.28" />
-                <stop offset="100%" stopColor={color} stopOpacity="0.0" />
-              </linearGradient>
-            </defs>
-
-            {/* Horizontal Gridlines */}
-            <line x1={padLeft} y1={padTop} x2={width - padRight} y2={padTop} stroke="#27272a" strokeDasharray="3 3" />
-            <line x1={padLeft} y1={padTop + chartH / 2} x2={width - padRight} y2={padTop + chartH / 2} stroke="#27272a" strokeDasharray="3 3" />
-            <line x1={padLeft} y1={padTop + chartH} x2={width - padRight} y2={padTop + chartH} stroke="#27272a" />
-
-            {/* Threshold reference lines if specified */}
-            {warningLine !== undefined && warningLine <= yMax && (
-              <line
-                x1={padLeft}
-                y1={getY(warningLine)}
-                x2={width - padRight}
-                y2={getY(warningLine)}
-                stroke="#f59e0b"
-                strokeDasharray="4 4"
-                strokeWidth="1.2"
-                opacity="0.85"
-              />
-            )}
-            {criticalLine !== undefined && criticalLine <= yMax && (
-              <line
-                x1={padLeft}
-                y1={getY(criticalLine)}
-                x2={width - padRight}
-                y2={getY(criticalLine)}
-                stroke="#f43f5e"
-                strokeDasharray="4 4"
-                strokeWidth="1.2"
-                opacity="0.85"
-              />
-            )}
-
-            {/* Area Fill */}
-            <path d={areaD} fill={`url(#grad-${dataKey})`} />
-
-            {/* Path Stroke */}
-            <path d={pathD} fill="none" stroke={color} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-
-            {/* Hover Crosshair */}
-            {hoveredPoint && (
-              <>
-                <line
-                  x1={hoveredPoint.x}
-                  y1={padTop}
-                  x2={hoveredPoint.x}
-                  y2={padTop + chartH}
-                  stroke="#71717a"
-                  strokeWidth="1"
-                  strokeDasharray="2 2"
-                />
-                <circle cx={hoveredPoint.x} cy={hoveredPoint.y} r="4" fill={color} stroke="#09090b" strokeWidth="2" />
-              </>
-            )}
-          </svg>
-        ) : (
-          <div className="h-full flex items-center justify-center text-xs font-mono text-zinc-600">
-            Awaiting 60s ring buffer telemetry…
-          </div>
-        )}
-      </div>
-
-      {/* Axis bounds */}
-      <div className="flex justify-between items-center text-[10px] font-mono text-zinc-500 mt-1">
-        <span>{data[0]?.t || "—"}</span>
-        <span>{data[data.length - 1]?.t || "Now"}</span>
-      </div>
-    </div>
-  );
 }
 
 /* ══════════════════════════════════════════════════════════════════════
@@ -602,6 +337,20 @@ export default function Home() {
 
   const currentChartData = timeWindow === "1m" ? liveHistory : historyData;
 
+  const tpsChartData = useMemo(() => {
+    return currentChartData.map((d) => ({
+      t: d.t,
+      val: d.tps,
+    }));
+  }, [currentChartData]);
+
+  const tdiChartData = useMemo(() => {
+    return currentChartData.map((d) => ({
+      t: d.t,
+      val: d.thrash_index,
+    }));
+  }, [currentChartData]);
+
   return (
     <div className="min-h-screen bg-[#09090b] text-zinc-100 flex flex-col font-sans selection:bg-cyan-500/30 selection:text-cyan-200">
       <Head>
@@ -699,9 +448,9 @@ export default function Home() {
         </header>
 
         {/* ══════════════════════════════════════════════════════════════════
-           NAVIGATION TABS
+           NAVIGATION TABS (with layoutId sliding indicator pill)
         ══════════════════════════════════════════════════════════════════ */}
-        <div className="flex items-center gap-2 border-b border-zinc-800/80 pb-2 text-xs font-mono">
+        <div className="flex items-center gap-1.5 border-b border-zinc-800/80 pb-2 text-xs font-mono relative">
           {[
             { id: "telemetry", label: "Telemetry & Tripwires", icon: Activity },
             { id: "quotas", label: "AI Quota Radar", icon: Zap, count: quotas.length },
@@ -715,12 +464,19 @@ export default function Home() {
               <button
                 key={tab.id}
                 onClick={() => setActiveTab(tab.id as DashboardTab)}
-                className={`flex items-center gap-2 px-3 py-1.5 rounded-lg transition-all ${
+                className={`relative flex items-center gap-2 px-3.5 py-1.5 rounded-lg transition-colors z-10 ${
                   isActive
-                    ? "bg-zinc-800 text-zinc-100 border border-zinc-700/80 shadow-sm"
-                    : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900/60"
+                    ? "text-zinc-100 font-semibold"
+                    : "text-zinc-400 hover:text-zinc-200"
                 }`}
               >
+                {isActive && (
+                  <motion.div
+                    layoutId="activeTabIndicator"
+                    className="absolute inset-0 bg-zinc-800 rounded-lg border border-zinc-700/70 shadow-sm z-[-1]"
+                    transition={{ type: "spring", stiffness: 450, damping: 35 }}
+                  />
+                )}
                 <Icon className="w-3.5 h-3.5" />
                 <span>{tab.label}</span>
                 {tab.count !== undefined && tab.count > 0 && (
@@ -734,34 +490,31 @@ export default function Home() {
         </div>
 
         {/* ══════════════════════════════════════════════════════════════════
-           TAB 1: TELEMETRY & TRIPWIRES (PRIMARY HIGH-DENSITY VIEW)
+           TAB 1: TELEMETRY & TRIPWIRES (MOTION-DRIVEN STAGGERED GRID)
         ══════════════════════════════════════════════════════════════════ */}
         {activeTab === "telemetry" && (
-          <div className="space-y-6">
-
-            {/* Runaway Tripwire Flashing Banner (if triggered) */}
-            {isRunaway && (
-              <div className="telemetry-card p-4 border-rose-500/80 bg-rose-950/30 animate-runaway-alert flex items-start gap-3.5">
-                <ShieldAlert className="w-5 h-5 text-rose-400 shrink-0 mt-0.5" />
-                <div className="flex-1">
-                  <div className="flex items-center gap-2 font-mono font-bold text-sm text-rose-300">
-                    <span>TRIPWIRE ENGAGED: RECURSIVE AGENT RUNAWAY DETECTED</span>
-                    <span className="text-xs px-2 py-0.5 rounded bg-rose-500/20 text-rose-300 border border-rose-500/30">
-                      BURN RATE EXCEEDED
-                    </span>
-                  </div>
-                  <p className="text-xs text-rose-200/80 mt-1 font-mono">
-                    {velocity?.reason || "High sustained token velocity or 0-backoff request flood exceeding tripwire threshold."}
-                  </p>
-                </div>
-              </div>
-            )}
+          <motion.div
+            variants={containerVariants}
+            initial="hidden"
+            animate="show"
+            className="space-y-6"
+          >
+            {/* Runaway Radar Component */}
+            <motion.div variants={itemVariants}>
+              <RunawayRadar
+                isRunaway={isRunaway}
+                burnRateStatus={velocity?.burn_rate_status ?? "nominal"}
+                reason={velocity?.reason}
+                tps={velocity?.tps ?? 0}
+                rpm={velocity?.rpm ?? 0}
+              />
+            </motion.div>
 
             {/* HERO SECTION: Thrash Danger Index (TDI) Radial Gauge & Decomposition */}
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
 
-              {/* Left Column: Radial Meter */}
-              <div className="telemetry-card lg:col-span-5 flex flex-col justify-between p-5">
+              {/* Left Column: Radial Meter with Motion Glow */}
+              <motion.div variants={itemVariants} className="telemetry-card lg:col-span-5 flex flex-col justify-between p-5">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <Activity className="w-4 h-4 text-emerald-400" />
@@ -781,8 +534,8 @@ export default function Home() {
                   </div>
                 </div>
 
-                {/* SVG Radial Gauge */}
-                <TDIRadialGauge tdi={tdi} />
+                {/* Motion-Driven SVG Radial Gauge */}
+                <TDIRadialMeter tdi={tdi} />
 
                 {/* Gauge Footnote */}
                 <div className="text-[11px] font-mono text-zinc-500 text-center border-t border-zinc-800/80 pt-3 flex items-center justify-center gap-4">
@@ -790,10 +543,10 @@ export default function Home() {
                   <span>•</span>
                   <span>Critical: &gt; 0.90</span>
                 </div>
-              </div>
+              </motion.div>
 
               {/* Right Column: Mathematical Decomposition Breakdown */}
-              <div className="telemetry-card lg:col-span-7 flex flex-col justify-between p-5 space-y-4">
+              <motion.div variants={itemVariants} className="telemetry-card lg:col-span-7 flex flex-col justify-between p-5 space-y-4">
                 <div>
                   <h3 className="text-xs font-mono uppercase tracking-wider text-zinc-300 font-semibold mb-1">
                     Telemetry Decomposition &amp; Weight Attribution
@@ -813,19 +566,20 @@ export default function Home() {
                         <span className="text-zinc-500 text-[10px]">(70% Weight)</span>
                       </div>
                       <span className="text-cyan-400 font-bold tabular-nums">
-                        +{(physicalTDIContribution).toFixed(3)} TDI
+                        +<AnimatedMetric value={physicalTDIContribution} precision={3} /> TDI
                       </span>
                     </div>
 
                     <div className="w-full h-2 rounded-full bg-zinc-800 overflow-hidden">
-                      <div
-                        className="h-full bg-gradient-to-r from-cyan-500 to-blue-500 rounded-full transition-all duration-300"
-                        style={{ width: `${Math.min(100, physicalRatio * 100)}%` }}
+                      <motion.div
+                        className="h-full bg-gradient-to-r from-cyan-500 to-blue-500 rounded-full"
+                        animate={{ width: `${Math.min(100, physicalRatio * 100)}%` }}
+                        transition={{ duration: 0.5, ease: "easeOut" }}
                       />
                     </div>
 
                     <div className="flex justify-between text-[11px] font-mono text-zinc-400 tabular-nums">
-                      <span>Wired: {fmtMB(wiredMB)}</span>
+                      <span>Wired: <AnimatedMetric value={wiredMB} formatFn={fmtMB} /></span>
                       <span>GPU Wired Limit: {fmtMB(limitMB)} ({(physicalRatio * 100).toFixed(1)}%)</span>
                     </div>
                   </div>
@@ -839,19 +593,20 @@ export default function Home() {
                         <span className="text-zinc-500 text-[10px]">(30% Weight)</span>
                       </div>
                       <span className="text-amber-400 font-bold tabular-nums">
-                        +{(swapTDIContribution).toFixed(3)} TDI
+                        +<AnimatedMetric value={swapTDIContribution} precision={3} /> TDI
                       </span>
                     </div>
 
                     <div className="w-full h-2 rounded-full bg-zinc-800 overflow-hidden">
-                      <div
-                        className="h-full bg-gradient-to-r from-amber-500 to-rose-500 rounded-full transition-all duration-300"
-                        style={{ width: `${Math.min(100, swapSubsystemRatio * 100)}%` }}
+                      <motion.div
+                        className="h-full bg-gradient-to-r from-amber-500 to-rose-500 rounded-full"
+                        animate={{ width: `${Math.min(100, swapSubsystemRatio * 100)}%` }}
+                        transition={{ duration: 0.5, ease: "easeOut" }}
                       />
                     </div>
 
                     <div className="flex justify-between text-[11px] font-mono text-zinc-400 tabular-nums">
-                      <span>Swap In Use: {fmtMB(swapUsedMB)}</span>
+                      <span>Swap In Use: <AnimatedMetric value={swapUsedMB} formatFn={fmtMB} /></span>
                       <span>Dynamic Ceiling: {fmtMB(dynamicSwapCeilingMB)} ({(swapSubsystemRatio * 100).toFixed(1)}%)</span>
                     </div>
                   </div>
@@ -863,9 +618,9 @@ export default function Home() {
                     <Clock className="w-3.5 h-3.5 text-zinc-400" />
                     <span>Sampling Frequency: 1.0s (Mach kernel C-bindings)</span>
                   </div>
-                  <span className="text-zinc-400">Total Derived TDI: {tdi.toFixed(3)}</span>
+                  <span className="text-zinc-400">Total Derived TDI: <AnimatedMetric value={tdi} precision={3} /></span>
                 </div>
-              </div>
+              </motion.div>
             </div>
 
             {/* ══════════════════════════════════════════════════════════════
@@ -874,7 +629,7 @@ export default function Home() {
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
 
               {/* CARD 1: Unified Memory Allocation */}
-              <div className="telemetry-card p-5 flex flex-col justify-between space-y-4">
+              <motion.div variants={itemVariants} className="telemetry-card p-5 flex flex-col justify-between space-y-4">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <Layers className="w-4 h-4 text-cyan-400" />
@@ -890,7 +645,7 @@ export default function Home() {
                 <div>
                   <div className="flex items-baseline gap-2 font-mono">
                     <span className="text-3xl font-bold text-zinc-100 tabular-nums">
-                      {fmtMB(wiredMB)}
+                      <AnimatedMetric value={wiredMB} formatFn={fmtMB} />
                     </span>
                     <span className="text-xs text-zinc-500">
                       / {fmtMB(limitMB)}
@@ -904,9 +659,10 @@ export default function Home() {
                 {/* Segmented Memory Bar */}
                 <div className="space-y-1.5">
                   <div className="w-full h-2 rounded-full bg-zinc-800/80 overflow-hidden flex">
-                    <div
-                      className="h-full bg-cyan-500 transition-all duration-300"
-                      style={{ width: `${Math.min(100, (wiredMB / limitMB) * 100)}%` }}
+                    <motion.div
+                      className="h-full bg-cyan-500 rounded-full"
+                      animate={{ width: `${Math.min(100, (wiredMB / limitMB) * 100)}%` }}
+                      transition={{ duration: 0.5, ease: "easeOut" }}
                     />
                   </div>
                   <div className="flex justify-between text-[10px] font-mono text-zinc-500">
@@ -921,10 +677,10 @@ export default function Home() {
                     {latest?.kv_cache_mb ? fmtMB(latest.kv_cache_mb) : "0 MB (Idle)"}
                   </span>
                 </div>
-              </div>
+              </motion.div>
 
               {/* CARD 2: Swap Subsystem */}
-              <div className="telemetry-card p-5 flex flex-col justify-between space-y-4">
+              <motion.div variants={itemVariants} className="telemetry-card p-5 flex flex-col justify-between space-y-4">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <HardDrive className="w-4 h-4 text-amber-400" />
@@ -940,23 +696,24 @@ export default function Home() {
                 <div>
                   <div className="flex items-baseline gap-2 font-mono">
                     <span className="text-3xl font-bold text-zinc-100 tabular-nums">
-                      {fmtMB(swapUsedMB)}
+                      <AnimatedMetric value={swapUsedMB} formatFn={fmtMB} />
                     </span>
                     <span className="text-xs text-zinc-500">
                       / {fmtMB(dynamicSwapCeilingMB)} ceiling
                     </span>
                   </div>
                   <p className="text-[11px] font-mono text-zinc-400 mt-1">
-                    Cumulative Pageouts: {fmtNum(pageouts)} pages
+                    Cumulative Pageouts: <AnimatedMetric value={pageouts} precision={0} /> pages
                   </p>
                 </div>
 
                 {/* Swap Subsystem Status */}
                 <div className="space-y-1.5">
                   <div className="w-full h-2 rounded-full bg-zinc-800/80 overflow-hidden flex">
-                    <div
-                      className="h-full bg-amber-500 transition-all duration-300"
-                      style={{ width: `${Math.min(100, (swapUsedMB / dynamicSwapCeilingMB) * 100)}%` }}
+                    <motion.div
+                      className="h-full bg-amber-500 rounded-full"
+                      animate={{ width: `${Math.min(100, (swapUsedMB / dynamicSwapCeilingMB) * 100)}%` }}
+                      transition={{ duration: 0.5, ease: "easeOut" }}
                     />
                   </div>
                   <div className="flex justify-between text-[10px] font-mono text-zinc-500">
@@ -971,10 +728,10 @@ export default function Home() {
                     {swapUsedMB > 0 ? "Swapping Active" : "Zero Thrash"}
                   </span>
                 </div>
-              </div>
+              </motion.div>
 
               {/* CARD 3: Agent Velocity & Quota Radar */}
-              <div className="telemetry-card p-5 flex flex-col justify-between space-y-4">
+              <motion.div variants={itemVariants} className="telemetry-card p-5 flex flex-col justify-between space-y-4">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <Zap className="w-4 h-4 text-indigo-400" />
@@ -990,22 +747,22 @@ export default function Home() {
                 <div>
                   <div className="flex items-baseline gap-2 font-mono">
                     <span className="text-3xl font-bold text-zinc-100 tabular-nums">
-                      {(velocity?.tps ?? 0).toFixed(1)}
+                      <AnimatedMetric value={velocity?.tps ?? 0} precision={1} />
                     </span>
                     <span className="text-xs text-zinc-500">
                       TPS (Tokens / Sec)
                     </span>
                   </div>
                   <div className="flex items-center gap-3 text-[11px] font-mono text-zinc-400 mt-1 tabular-nums">
-                    <span>TPM: {fmtNum(velocity?.tpm ?? 0)}</span>
+                    <span>TPM: <AnimatedMetric value={velocity?.tpm ?? 0} precision={0} /></span>
                     <span>•</span>
-                    <span>RPM: {(velocity?.rpm ?? 0).toFixed(1)} req/min</span>
+                    <span>RPM: <AnimatedMetric value={velocity?.rpm ?? 0} precision={1} /> req/min</span>
                   </div>
                 </div>
 
                 {/* Tripwire Status Pill */}
                 <div className="pt-2">
-                  <div className={`p-2.5 rounded-lg border text-xs font-mono flex items-center justify-between ${
+                  <div className={`p-2.5 rounded-lg border text-xs font-mono flex items-center justify-between transition-colors ${
                     isRunaway
                       ? "bg-rose-500/20 border-rose-500 text-rose-300 font-bold"
                       : "bg-emerald-500/10 border-emerald-500/30 text-emerald-400"
@@ -1021,48 +778,57 @@ export default function Home() {
                     {config?.velocity_alert_tps ?? 150} TPS / {config?.velocity_alert_rpm ?? 45} RPM
                   </span>
                 </div>
-              </div>
+              </motion.div>
 
             </div>
 
             {/* ══════════════════════════════════════════════════════════════
                HISTORICAL VELOCITY & TELEMETRY SPARKLINES
             ══════════════════════════════════════════════ */}
-            <div className="space-y-4">
+            <motion.div variants={itemVariants} className="space-y-4">
               <div className="flex flex-wrap items-center justify-between gap-4">
                 <div>
                   <h3 className="text-sm font-mono font-semibold tracking-tight text-zinc-100">
                     Historical Velocity &amp; Memory Trajectory
                   </h3>
                   <p className="text-xs font-mono text-zinc-500">
-                    Zero-overhead SVG sparklines capturing sliding-window token burn and memory pressure.
+                    Smooth cubic bezier SVG sparklines capturing sliding-window token burn and memory pressure.
                   </p>
                 </div>
 
-                {/* Segmented Window Picker */}
-                <div className="flex items-center p-1 rounded-lg bg-zinc-900 border border-zinc-800 font-mono text-xs">
-                  {(["1m", "5m", "1h"] as TimeWindow[]).map((win) => (
-                    <button
-                      key={win}
-                      onClick={() => setTimeWindow(win)}
-                      className={`px-3 py-1 rounded-md transition-all ${
-                        timeWindow === win
-                          ? "bg-zinc-800 text-zinc-100 font-semibold shadow"
-                          : "text-zinc-400 hover:text-zinc-200"
-                      }`}
-                    >
-                      {win === "1m" ? "Real-time (1s)" : win === "5m" ? "5m Rollup" : "1h History"}
-                    </button>
-                  ))}
+                {/* Segmented Window Picker with layoutId sliding pill */}
+                <div className="flex items-center p-1 rounded-lg bg-zinc-900 border border-zinc-800 font-mono text-xs relative">
+                  {(["1m", "5m", "1h"] as TimeWindow[]).map((win) => {
+                    const isSelected = timeWindow === win;
+                    return (
+                      <motion.button
+                        key={win}
+                        onClick={() => setTimeWindow(win)}
+                        whileHover={{ scale: 1.04 }}
+                        whileTap={{ scale: 0.96 }}
+                        className={`relative z-10 px-3 py-1.5 rounded-md transition-colors ${
+                          isSelected ? "text-zinc-100 font-semibold" : "text-zinc-400 hover:text-zinc-200"
+                        }`}
+                      >
+                        {isSelected && (
+                          <motion.div
+                            layoutId="activeTimeWindowPill"
+                            className="absolute inset-0 bg-zinc-800 rounded-md shadow-sm border border-zinc-700/60 z-[-1]"
+                            transition={{ type: "spring", stiffness: 450, damping: 35 }}
+                          />
+                        )}
+                        {win === "1m" ? "Real-time (1s)" : win === "5m" ? "5m Rollup" : "1h History"}
+                      </motion.button>
+                    );
+                  })}
                 </div>
               </div>
 
-              {/* Sparkline Canvas Grid */}
+              {/* Motion Sparklines Stream Grid */}
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                 {/* Chart 1: TDI & Wired VRAM */}
-                <TelemetrySparkline
-                  data={currentChartData}
-                  dataKey="thrash_index"
+                <SparklineStream
+                  data={tdiChartData}
                   color="#10b981"
                   unit="TDI"
                   minVal={0}
@@ -1070,31 +836,37 @@ export default function Home() {
                   warningLine={0.75}
                   criticalLine={0.90}
                   title="Thrash Danger Index (TDI)"
-                  currentVal={tdi.toFixed(2)}
+                  currentVal={tdi}
+                  gradientId="grad-tdi-stream"
                 />
 
                 {/* Chart 2: Token Velocity (TPS) */}
-                <TelemetrySparkline
-                  data={currentChartData}
-                  dataKey="tps"
+                <SparklineStream
+                  data={tpsChartData}
                   color="#6366f1"
                   unit="TPS"
                   minVal={0}
                   warningLine={config?.velocity_alert_tps ?? 150}
                   title="Token Velocity Burn Rate"
-                  currentVal={(velocity?.tps ?? 0).toFixed(1)}
+                  currentVal={velocity?.tps ?? 0}
+                  gradientId="grad-tps-stream"
                 />
               </div>
-            </div>
+            </motion.div>
 
-          </div>
+          </motion.div>
         )}
 
         {/* ══════════════════════════════════════════════════════════════════
            TAB 2: AI QUOTA RADAR
         ══════════════════════════════════════════════════════════════════ */}
         {activeTab === "quotas" && (
-          <div className="space-y-4">
+          <motion.div
+            variants={containerVariants}
+            initial="hidden"
+            animate="show"
+            className="space-y-4"
+          >
             <div className="flex items-center justify-between">
               <div>
                 <h3 className="text-sm font-mono font-semibold text-zinc-100">
@@ -1115,7 +887,7 @@ export default function Home() {
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
               {quotas.length > 0 ? (
                 quotas.map((q) => (
-                  <div key={q.id} className="telemetry-card p-4 space-y-3">
+                  <motion.div variants={itemVariants} key={q.id} className="telemetry-card p-4 space-y-3">
                     <div className="flex items-center justify-between">
                       <span className="text-xs font-mono font-semibold text-zinc-200">{q.provider}</span>
                       <span className={`text-[10px] font-mono px-2 py-0.5 rounded-full uppercase border ${
@@ -1152,7 +924,7 @@ export default function Home() {
                         <span>Resets: {q.resets_in}</span>
                       </div>
                     </div>
-                  </div>
+                  </motion.div>
                 ))
               ) : (
                 <div className="col-span-3 text-center py-12 text-zinc-500 font-mono text-xs">
@@ -1160,14 +932,19 @@ export default function Home() {
                 </div>
               )}
             </div>
-          </div>
+          </motion.div>
         )}
 
         {/* ══════════════════════════════════════════════════════════════════
            TAB 3: LOCAL LLM ENGINES
         ══════════════════════════════════════════════════════════════════ */}
         {activeTab === "engines" && (
-          <div className="space-y-4">
+          <motion.div
+            variants={containerVariants}
+            initial="hidden"
+            animate="show"
+            className="space-y-4"
+          >
             <div>
               <h3 className="text-sm font-mono font-semibold text-zinc-100">
                 Local LLM Inference Engine Probes
@@ -1179,7 +956,7 @@ export default function Home() {
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {engines?.engines?.map((eng) => (
-                <div key={eng.name} className="telemetry-card p-4 space-y-3">
+                <motion.div variants={itemVariants} key={eng.name} className="telemetry-card p-4 space-y-3">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
                       <Server className="w-4 h-4 text-cyan-400" />
@@ -1210,17 +987,22 @@ export default function Home() {
                       No models loaded in unified memory.
                     </p>
                   )}
-                </div>
+                </motion.div>
               ))}
             </div>
-          </div>
+          </motion.div>
         )}
 
         {/* ══════════════════════════════════════════════════════════════════
            TAB 4: SPIKE INCIDENTS (24-HOUR AUDIT)
-        ══════════════════════════════════════════════ */}
+        ══════════════════════════════════════════════════════════════════ */}
         {activeTab === "spikes" && (
-          <div className="space-y-4">
+          <motion.div
+            variants={containerVariants}
+            initial="hidden"
+            animate="show"
+            className="space-y-4"
+          >
             <div>
               <h3 className="text-sm font-mono font-semibold text-zinc-100">
                 Top 24-Hour Memory Spike Incidents
@@ -1230,7 +1012,7 @@ export default function Home() {
               </p>
             </div>
 
-            <div className="telemetry-card overflow-hidden">
+            <motion.div variants={itemVariants} className="telemetry-card overflow-hidden">
               <table className="w-full text-left text-xs font-mono">
                 <thead className="bg-zinc-800/60 border-b border-zinc-800 text-zinc-400">
                   <tr>
@@ -1261,15 +1043,20 @@ export default function Home() {
                   )}
                 </tbody>
               </table>
-            </div>
-          </div>
+            </motion.div>
+          </motion.div>
         )}
 
         {/* ══════════════════════════════════════════════════════════════════
            TAB 5: CONFIG & PREFERENCES
         ══════════════════════════════════════════════════════════════════ */}
         {activeTab === "config" && (
-          <div className="space-y-4">
+          <motion.div
+            variants={containerVariants}
+            initial="hidden"
+            animate="show"
+            className="space-y-4"
+          >
             <div>
               <h3 className="text-sm font-mono font-semibold text-zinc-100">
                 Zero-Dependency User Preferences (~/.sentinel/config.json)
@@ -1279,7 +1066,7 @@ export default function Home() {
               </p>
             </div>
 
-            <div className="telemetry-card p-5 space-y-4 font-mono text-xs">
+            <motion.div variants={itemVariants} className="telemetry-card p-5 space-y-4 font-mono text-xs">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div className="p-3 rounded bg-zinc-800/40 border border-zinc-800">
                   <span className="text-zinc-500">proxy_url:</span>
@@ -1318,8 +1105,8 @@ export default function Home() {
               <div className="pt-2 text-zinc-500 text-[11px]">
                 To modify these preferences, edit <code className="text-zinc-300">~/.sentinel/config.json</code> in any text editor.
               </div>
-            </div>
-          </div>
+            </motion.div>
+          </motion.div>
         )}
 
         {/* ══════════════════════════════════════════════════════════════════
