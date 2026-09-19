@@ -3,8 +3,8 @@ class Sentinel < Formula
 
   desc "Zero-overhead unified memory telemetry and runaway agent loop tripwire for Apple Silicon"
   homepage "https://github.com/Shlok04423/sentinel-ai"
-  url "https://github.com/Shlok04423/sentinel-ai/archive/refs/tags/v1.0.0.tar.gz"
-  sha256 "9acae27377a8f311923fe3994d6892b1619a12ae1bf64448edfb06a3070db43e"
+  url "https://github.com/Shlok04423/sentinel-ai/archive/refs/tags/v1.0.1.tar.gz"
+  sha256 "0019dfc4b32d63c1392aa264aed2253c1e0c2fb09216f8e2cc269bbfb8bb49b5"
   license "MIT"
   head "https://github.com/Shlok04423/sentinel-ai.git", branch: "main"
 
