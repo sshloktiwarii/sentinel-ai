@@ -2,11 +2,11 @@ class Sentinel < Formula
   include Language::Python::Virtualenv
 
   desc "Zero-overhead unified memory telemetry and runaway agent loop tripwire for Apple Silicon"
-  homepage "https://github.com/Shlok04423/sentinel-ai"
-  url "https://github.com/Shlok04423/sentinel-ai/archive/refs/tags/v1.0.1.tar.gz"
+  homepage "https://github.com/sshloktiwarii/sentinel-ai"
+  url "https://github.com/sshloktiwarii/sentinel-ai/archive/refs/tags/v1.0.1.tar.gz"
   sha256 "0019dfc4b32d63c1392aa264aed2253c1e0c2fb09216f8e2cc269bbfb8bb49b5"
   license "MIT"
-  head "https://github.com/Shlok04423/sentinel-ai.git", branch: "main"
+  head "https://github.com/sshloktiwarii/sentinel-ai.git", branch: "main"
 
   depends_on "python@3.12"
   depends_on :macos

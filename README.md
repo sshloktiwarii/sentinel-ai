@@ -135,7 +135,7 @@ Sentinel-AI packages three official command-line entry points:
 
 ```bash
 # Clone the repository
-git clone https://github.com/Shlok04423/sentinel-ai.git
+git clone https://github.com/sshloktiwarii/sentinel-ai.git
 cd sentinel-ai
 
 # Create virtual environment and install development dependencies
